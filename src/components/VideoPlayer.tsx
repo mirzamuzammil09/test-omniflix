@@ -249,13 +249,40 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
     progressLoadedRef.current = true;
   }, [tmdbId, season, episode, getProgressLocal]);
 
-  // Fullscreen change listener
+  // Fullscreen change listener and redirection guard
   useEffect(() => {
     const handleFsChange = () => {
       const fsElement = document.fullscreenElement ||
         (document as any).webkitFullscreenElement ||
         (document as any).mozFullScreenElement ||
         (document as any).msFullscreenElement;
+
+      // Fallback: If the video element itself went fullscreen directly, exit it and request container instead.
+      if (fsElement && videoRef.current && fsElement === videoRef.current) {
+        const container = containerRef.current;
+        if (container) {
+          if (document.exitFullscreen) {
+            document.exitFullscreen().then(() => {
+              const requestFS = container.requestFullscreen ||
+                                (container as any).webkitRequestFullscreen ||
+                                (container as any).mozRequestFullScreen ||
+                                (container as any).msRequestFullscreen;
+              if (requestFS) {
+                requestFS.call(container).catch(() => {});
+              }
+            }).catch(() => {});
+          } else if ((document as any).webkitExitFullscreen) {
+            (document as any).webkitExitFullscreen();
+            const requestFS = container.requestFullscreen ||
+                              (container as any).webkitRequestFullscreen;
+            if (requestFS) {
+              requestFS.call(container);
+            }
+          }
+          return;
+        }
+      }
+
       setIsFullscreen(!!fsElement);
     };
 
@@ -271,6 +298,61 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
       document.removeEventListener('MSFullscreenChange', handleFsChange);
     };
   }, []);
+
+  // Intercept all native video player fullscreen requests (e.g. from Brave native controls bar button)
+  useEffect(() => {
+    const video = videoRef.current;
+    const container = containerRef.current;
+    if (!video || !container) return;
+
+    // Save the original video fullscreen functions
+    const originalRequestFullscreen = video.requestFullscreen;
+    const originalWebkitRequestFullscreen = (video as any).webkitRequestFullscreen;
+    const originalWebkitEnterFullscreen = (video as any).webkitEnterFullscreen;
+
+    // Intercept native video element fullscreen calls and redirect to the parent container
+    const interceptFullscreen = function(this: HTMLVideoElement, options?: any) {
+      console.log('Intercepted native fullscreen request on video, redirecting to containerRef');
+      const requestFS = container.requestFullscreen || 
+                        (container as any).webkitRequestFullscreen || 
+                        (container as any).mozRequestFullScreen || 
+                        (container as any).msRequestFullscreen;
+      if (requestFS) {
+        return requestFS.call(container, options);
+      }
+      return Promise.reject(new Error('Fullscreen not supported on container'));
+    };
+
+    // Override the video element methods directly
+    (video as any).requestFullscreen = interceptFullscreen;
+    (video as any).webkitRequestFullscreen = interceptFullscreen;
+    (video as any).webkitEnterFullscreen = interceptFullscreen;
+
+    // Intercept iOS / webkitbeginfullscreen events
+    const handleWebKitEnterFullscreen = (e: Event) => {
+      e.preventDefault();
+      const requestFS = container.requestFullscreen || 
+                        (container as any).webkitRequestFullscreen || 
+                        (container as any).mozRequestFullScreen || 
+                        (container as any).msRequestFullscreen;
+      if (requestFS) {
+        requestFS.call(container);
+      }
+    };
+    video.addEventListener('webkitbeginfullscreen', handleWebKitEnterFullscreen);
+    video.addEventListener('webkitenterfullscreen', handleWebKitEnterFullscreen);
+
+    return () => {
+      // Restore original functions if video unmounts or changes
+      if (video) {
+        (video as any).requestFullscreen = originalRequestFullscreen;
+        (video as any).webkitRequestFullscreen = originalWebkitRequestFullscreen;
+        (video as any).webkitEnterFullscreen = originalWebkitEnterFullscreen;
+        video.removeEventListener('webkitbeginfullscreen', handleWebKitEnterFullscreen);
+        video.removeEventListener('webkitenterfullscreen', handleWebKitEnterFullscreen);
+      }
+    };
+  }, [s1StreamUrl]);
 
   const handleMouseMove = useCallback(() => {
     setUserActive(true);
@@ -960,22 +1042,7 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
         </div>
       )}
 
-      {/* Floating Fullscreen Button in bottom-right corner (to the left of native volume button) */}
-      {activeServer === 'server1' && s1StreamUrl && !s1Fetching && !s1Error && (
-        <button
-          onClick={toggleFullscreen}
-          className={`absolute bottom-8 right-36 z-30 flex items-center justify-center p-2 rounded-xl bg-neutral-900/80 hover:bg-neutral-800 border border-white/10 text-white shadow-lg transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer backdrop-blur-md ${
-            userActive || isPaused ? 'opacity-100' : 'opacity-0 pointer-events-none'
-          }`}
-          title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
-        >
-          {isFullscreen ? (
-            <Minimize className="w-3.5 h-3.5 text-white" />
-          ) : (
-            <Maximize className="w-3.5 h-3.5 text-white" />
-          )}
-        </button>
-      )}
+
 
       {/* Floating Unmute Button Overlay */}
       {activeServer === 'server1' && s1StreamUrl && !s1Fetching && !s1Error && isMuted && (
