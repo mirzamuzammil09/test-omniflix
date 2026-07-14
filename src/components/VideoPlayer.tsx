@@ -893,7 +893,7 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
     >
       {/* ─── Premium Glass Floating Top Controls Bar ─── */}
       <div
-        className={`absolute top-2 left-2 right-2 sm:top-4 sm:left-4 sm:right-4 z-30 flex flex-wrap items-center justify-between gap-2 sm:gap-3 p-2 sm:p-3 rounded-2xl glass-panel border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.6)] transition-all duration-300 ${userActive || isPaused ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4 pointer-events-none'
+        className={`absolute top-2 left-2 right-2 sm:top-4 sm:left-4 sm:right-4 z-30 flex items-center justify-between p-2 sm:p-3 rounded-2xl glass-panel border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.6)] transition-all duration-300 ${userActive || isPaused ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4 pointer-events-none'
           }`}
         onMouseEnter={() => {
           if (activeTimeoutRef.current) clearTimeout(activeTimeoutRef.current);
@@ -901,15 +901,8 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
         onMouseLeave={handleMouseMove}
       >
         <div className="flex items-center gap-2 sm:gap-3">
-          <span className="text-[10px] sm:text-xs font-bold text-white truncate max-w-[180px] sm:max-w-[400px]">
+          <span className="text-[10px] sm:text-xs font-bold text-white truncate max-w-[280px] sm:max-w-[600px]">
             {title || 'Loading title...'}
-          </span>
-        </div>
-
-        {/* Server indicator / Title indicator */}
-        <div className="flex items-center gap-2">
-          <span className="text-[9px] font-black text-red-500 bg-red-950/40 border border-red-500/20 px-2 py-0.5 rounded-md uppercase tracking-widest animate-pulse-glow">
-            Server 1
           </span>
         </div>
       </div>
@@ -1184,31 +1177,7 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
                 <ArrowRight className="w-4 h-4" />
               </button>
 
-              {/* TV Navigation: Previous Episode & Next Episode */}
-              {type === 'tv' && (
-                <div className="flex items-center gap-1">
-                  {episode > 1 && (
-                    <button
-                      onClick={handlePrevEpisode}
-                      className="p-1.5 text-white hover:text-red-500 hover:scale-110 active:scale-95 transition-all cursor-pointer rounded-lg hover:bg-white/5 flex items-center gap-1"
-                      title="Previous Episode"
-                    >
-                      <ArrowLeft className="w-4 h-4" />
-                      <span className="text-[9px] font-black uppercase tracking-wider hidden md:inline">Prev Ep</span>
-                    </button>
-                  )}
-                  {hasNextEpisode() && (
-                    <button
-                      onClick={handleNextEpisode}
-                      className="p-1.5 text-white hover:text-red-500 hover:scale-110 active:scale-95 transition-all cursor-pointer rounded-lg hover:bg-white/5 flex items-center gap-1"
-                      title="Next Episode"
-                    >
-                      <span className="text-[9px] font-black uppercase tracking-wider hidden md:inline">Next Ep</span>
-                      <ArrowRight className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-              )}
+
 
               {/* Volume Control Group */}
               <div className="flex items-center gap-1.5 group/volume">
@@ -1247,23 +1216,23 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
             {/* Right Controls Group */}
             <div className="flex items-center gap-2">
               {/* Dub selector */}
-              {s1AudioVersions.length > 0 && (
-                <div className="flex items-center gap-1">
-                  <select
-                    value={s1SelectedAudio}
-                    onChange={(e) => handleAudioChange(e.target.value)}
-                    disabled={s1Fetching && s1AudioVersions.length === 0}
-                    className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-neutral-950/80 hover:bg-neutral-900 border border-white/10 rounded-xl text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-neutral-300 hover:text-white cursor-pointer focus:outline-none focus:ring-1 focus:ring-red-600 disabled:opacity-40"
-                  >
-                    <option value="none">Original</option>
-                    {s1AudioVersions.map((track) => (
-                      <option key={track.subject_id || track.id} value={track.subject_id || track.id}>
-                        {track.label || track.language || 'Dub'}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
+              <div className="flex items-center gap-1">
+                <select
+                  value={s1SelectedAudio}
+                  onChange={(e) => handleAudioChange(e.target.value)}
+                  disabled={s1Fetching && s1AudioVersions.length === 0}
+                  className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-neutral-950/80 hover:bg-neutral-900 border border-white/10 rounded-xl text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-neutral-300 hover:text-white cursor-pointer focus:outline-none focus:ring-1 focus:ring-red-600 disabled:opacity-40"
+                >
+                  <option value="none">
+                    {s1Fetching && s1AudioVersions.length === 0 ? 'Loading...' : 'Original'}
+                  </option>
+                  {s1AudioVersions.map((track) => (
+                    <option key={track.subject_id || track.id} value={track.subject_id || track.id}>
+                      {track.label || track.language || 'Dub'}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
               {/* Subtitle Selector */}
               {s1Subtitles.length > 0 && (
