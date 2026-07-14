@@ -76,6 +76,7 @@ function extractRootAudioVersion(streamObj: any): any | null {
 // Keep a local in-memory cache of proxies so we don't fetch from proxyscrape on every single request
 let cachedProxiesList: string[] = [];
 let cachedProxiesTime = 0;
+let lastWorkingProxy: string | null = null;
 
 async function getFreeProxies(): Promise<string[]> {
   const now = Date.now();
@@ -93,13 +94,32 @@ async function getFreeProxies(): Promise<string[]> {
       if (list.length > 0) {
         cachedProxiesList = list;
         cachedProxiesTime = now;
-        logDebug(`[Proxy] Successfully cached ${list.length} proxies`);
+        logDebug(`[Proxy] Successfully cached ${list.length} proxies from proxyscrape`);
         return list;
       }
     }
   } catch (e: any) {
-    logDebug(`[Proxy] Failed to fetch free proxy list: ${e.message}`);
+    logDebug(`[Proxy] Failed to fetch free proxy list from proxyscrape: ${e.message}`);
   }
+
+  // Fallback to monosans github list to make it extremely resilient
+  try {
+    logDebug(`[Proxy] Fetching fallback proxy list from monosans github...`);
+    const res = await fetch("https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt");
+    if (res.ok) {
+      const text = await res.text();
+      const list = text.split("\n").map(p => p.trim()).filter(Boolean);
+      if (list.length > 0) {
+        cachedProxiesList = list;
+        cachedProxiesTime = now;
+        logDebug(`[Proxy] Successfully cached ${list.length} proxies from monosans github`);
+        return list;
+      }
+    }
+  } catch (e: any) {
+    logDebug(`[Proxy] Failed to fetch free proxy list from monosans: ${e.message}`);
+  }
+
   return cachedProxiesList;
 }
 
@@ -418,35 +438,56 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
     process.env.NODE_ENV === "production" ||
     process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined;
 
-  // 1. Try Direct Fetch first (only in local/non-serverless environment)
-  if (!isServerless) {
+  // 1. If we have a cached working proxy, try it first to avoid spawning parallel requests
+  if (lastWorkingProxy) {
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 4500); // 4.5s timeout for direct fetch (more lenient for local dev)
-      const directOptions = { ...options, signal: controller.signal };
-
-      logDebug(`[Proxy-Client] Attempting direct fetch to ${url}...`);
-      const res = await fetch(url, directOptions);
-      clearTimeout(timer);
-
+      logDebug(`[Proxy-Client] Trying cached working proxy: http://${lastWorkingProxy}`);
+      const res = await requestWithProxy(url, {
+        ...options,
+        proxy: `http://${lastWorkingProxy}`,
+        timeout: 2500,
+      });
       if (res.ok) {
-        logDebug(`[Proxy-Client] Direct fetch succeeded for ${url}`);
+        logDebug(`[Proxy-Client] Cached working proxy http://${lastWorkingProxy} succeeded!`);
         return res;
       }
-
-      if (res.status === 403) {
-        logDebug(`[Proxy-Client] Direct fetch blocked (403) for ${url}. Switching to proxy fallback.`);
-      } else {
-        logDebug(`[Proxy-Client] Direct fetch returned status ${res.status} for ${url}. Switching to proxy fallback.`);
-      }
+      logDebug(`[Proxy-Client] Cached working proxy http://${lastWorkingProxy} returned status: ${res.status}`);
+      lastWorkingProxy = null; // Clear if it returns error/non-OK
     } catch (err: any) {
-      logDebug(`[Proxy-Client] Direct fetch failed/timed out for ${url}: ${err.message}. Switching to proxy fallback.`);
+      logDebug(`[Proxy-Client] Cached working proxy http://${lastWorkingProxy} failed: ${err.message}`);
+      lastWorkingProxy = null; // Clear on connection error
     }
-  } else {
-    logDebug(`[Proxy-Client] Serverless environment detected. Bypassing direct fetch to ${url} to avoid 3s block/timeout.`);
   }
 
-  // 2. Fallback to Proxy Rotation
+  // 2. Try Direct Fetch first
+  // In serverless, we do a very quick direct fetch attempt (1.2s timeout).
+  // If it succeeds (e.g. if Cloudflare bypasses or Vercel region is not blocked), we avoid proxying completely!
+  // If it is blocked (returns 403 instantly) or times out (takes 1.2s), we fallback to proxy.
+  const directTimeout = isServerless ? 1200 : 4500;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), directTimeout);
+    const directOptions = { ...options, signal: controller.signal };
+
+    logDebug(`[Proxy-Client] Attempting direct fetch to ${url} (Timeout: ${directTimeout}ms)...`);
+    const res = await fetch(url, directOptions);
+    clearTimeout(timer);
+
+    if (res.ok) {
+      logDebug(`[Proxy-Client] Direct fetch succeeded for ${url}`);
+      return res;
+    }
+
+    if (res.status === 403) {
+      logDebug(`[Proxy-Client] Direct fetch blocked (403) for ${url}. Switching to proxy fallback.`);
+    } else {
+      logDebug(`[Proxy-Client] Direct fetch returned status ${res.status} for ${url}. Switching to proxy fallback.`);
+    }
+  } catch (err: any) {
+    logDebug(`[Proxy-Client] Direct fetch failed/timed out for ${url}: ${err.message}. Switching to proxy fallback.`);
+  }
+
+  // 3. Fallback to Proxy Rotation
   const proxies = await getFreeProxies();
   if (proxies.length === 0) {
     logDebug(`[Proxy-Client] No backup proxies available, throwing error`);
@@ -454,7 +495,9 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
   }
 
   const shuffled = [...proxies].sort(() => 0.5 - Math.random());
-  const testProxies = shuffled.slice(0, 15);
+  // Test fewer proxies in parallel on serverless to avoid saturating resources (10 instead of 15)
+  const maxParallel = isServerless ? 10 : 15;
+  const testProxies = shuffled.slice(0, maxParallel);
   logDebug(`[Proxy-Client] Testing ${testProxies.length} proxies in parallel for URL: ${url}`);
 
   return new Promise((resolve, reject) => {
@@ -463,8 +506,8 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
     const errors: any[] = [];
     const abortControllers: AbortController[] = [];
 
-    // Safety timeout to ensure we return before execution limit (use 5.5s for serverless, 8s for local dev)
-    const timeoutDuration = isServerless ? 5500 : 8000;
+    // Safety timeout to ensure we return before execution limit (use 6.5s for serverless, 9s for local dev)
+    const timeoutDuration = isServerless ? 6500 : 9000;
     const overallTimeout = setTimeout(() => {
       if (!resolved) {
         resolved = true;
@@ -490,6 +533,10 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
             clearTimeout(overallTimeout);
             abortControllers.forEach(ctrl => ctrl.abort());
             logDebug(`[Proxy-Client] Parallel Proxy http://${proxy} succeeded!`);
+            
+            // Cache the successful proxy in memory for subsequent requests
+            lastWorkingProxy = proxy;
+            
             resolve(res);
           } else {
             throw new Error(`Non-OK status: ${res.status}`);
