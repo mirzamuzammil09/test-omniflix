@@ -744,7 +744,7 @@ export async function POST(request: NextRequest) {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
           },
           cache: "no-store",
-          signal: AbortSignal.timeout(15000)
+          signal: AbortSignal.timeout(4000)
         })
           .then((res) => {
             if (res.ok) return res.json();
@@ -813,7 +813,7 @@ export async function POST(request: NextRequest) {
                   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 },
                 cache: "no-store",
-                signal: AbortSignal.timeout(10000)
+                signal: AbortSignal.timeout(5000)
               }
             );
             if (freshAvRes.ok) {
@@ -911,7 +911,7 @@ export async function POST(request: NextRequest) {
             },
             body: JSON.stringify({ tmdb_id: id.toString(), content_type: contentType, server, ...tvScrapeParams }),
             cache: "no-store",
-            signal: AbortSignal.timeout(15000),
+            signal: AbortSignal.timeout(8000),
           });
 
           if (scrapeResponse.ok) {
@@ -987,7 +987,7 @@ export async function POST(request: NextRequest) {
                   },
                   body: JSON.stringify({ tmdb_id: id.toString(), content_type: contentType, server, ...tvScrapeParams2 }),
                   cache: "no-store",
-                  signal: AbortSignal.timeout(10000),
+                  signal: AbortSignal.timeout(6000),
                 });
                 if (scrapeRes2.ok) {
                   const resJson2 = await scrapeRes2.json();
