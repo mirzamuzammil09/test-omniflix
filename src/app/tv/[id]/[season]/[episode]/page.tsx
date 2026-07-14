@@ -23,7 +23,7 @@ export default async function TVPage({ params }: TVPageProps) {
   const resolvedParams = await params;
   
   return (
-    <main className="w-screen h-screen bg-black overflow-hidden m-0 p-0 flex items-center justify-center">
+    <main className="w-full h-dvh bg-black overflow-hidden m-0 p-0 flex items-center justify-center">
       <VideoPlayer 
         tmdbId={resolvedParams.id} 
         type="tv" 
