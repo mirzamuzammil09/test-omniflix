@@ -12,7 +12,9 @@ import {
   ArrowRight, 
   ArrowLeft, 
   Maximize, 
-  Minimize 
+  Minimize,
+  ChevronDown,
+  Check
 } from 'lucide-react';
 import { tmdb } from '@/services/tmdb';
 
@@ -68,6 +70,7 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
   // Gesture feedbacks
   const [doubleTapFeedback, setDoubleTapFeedback] = useState<'left' | 'right' | null>(null);
   const [centerIconState, setCenterIconState] = useState<'play' | 'pause' | null>(null);
+  const [activeDropdown, setActiveDropdown] = useState<'audio' | 'subtitle' | 'quality' | null>(null);
 
   const activeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastTouchTimeRef = useRef<number>(0);
@@ -365,6 +368,7 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
     if (clickY <= 80 || clickY >= height - 80) {
       return;
     }
+    setActiveDropdown(null);
 
     if (e.detail === 2) {
       // Double click / Double tap
@@ -413,6 +417,7 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
     if (clickY <= 80 || clickY >= height - 80) {
       return;
     }
+    setActiveDropdown(null);
 
     const now = Date.now();
     const delay = now - lastTouchTimeRef.current;
@@ -1255,56 +1260,170 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
             <div className="flex items-center justify-between sm:justify-end gap-2 w-full sm:w-auto">
               <div className="flex items-center gap-2">
                 {/* Dub selector */}
-                <div className="flex items-center gap-1">
-                  <select
-                    value={s1SelectedAudio}
-                    onChange={(e) => handleAudioChange(e.target.value)}
+                <div className="relative">
+                  <button
+                    onClick={() => {
+                      setActiveDropdown(activeDropdown === 'audio' ? null : 'audio');
+                    }}
                     disabled={s1Fetching && s1AudioVersions.length === 0}
-                    className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-neutral-950/80 hover:bg-neutral-900 border border-white/10 rounded-xl text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-neutral-300 hover:text-white cursor-pointer focus:outline-none focus:ring-1 focus:ring-red-600 disabled:opacity-40"
+                    className="flex items-center gap-1 px-2 py-1 bg-neutral-950/80 hover:bg-neutral-900 border border-white/10 rounded-xl text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-neutral-300 hover:text-white cursor-pointer focus:outline-none disabled:opacity-40 transition-colors"
                   >
-                    <option value="none">
-                      {s1Fetching && s1AudioVersions.length === 0 ? 'Loading...' : 'Original'}
-                    </option>
-                    {s1AudioVersions.map((track) => (
-                      <option key={track.subject_id || track.id} value={track.subject_id || track.id}>
-                        {track.label || track.language || 'Dub'}
-                      </option>
-                    ))}
-                  </select>
+                    <Volume2 className="w-3.5 h-3.5 mr-0.5 text-neutral-400" />
+                    <span>
+                      {s1Fetching && s1AudioVersions.length === 0 
+                        ? 'Loading...' 
+                        : s1SelectedAudio === 'none' 
+                          ? 'Original' 
+                          : (s1AudioVersions.find(t => (t.subject_id || t.id) === s1SelectedAudio)?.label || 
+                             s1AudioVersions.find(t => (t.subject_id || t.id) === s1SelectedAudio)?.language || 
+                             'Dub')}
+                    </span>
+                    <ChevronDown className="w-3 h-3 ml-0.5 text-neutral-400" />
+                  </button>
+
+                  {activeDropdown === 'audio' && (
+                    <div className="absolute bottom-full right-0 mb-2 z-50 min-w-[120px] max-h-48 overflow-y-auto rounded-xl glass-panel border border-white/15 p-1 flex flex-col gap-0.5 shadow-[0_8px_32px_rgba(0,0,0,0.8)] animate-fade-in bg-neutral-950/95 backdrop-blur-md">
+                      <button
+                        onClick={() => {
+                          handleAudioChange('none');
+                          setActiveDropdown(null);
+                        }}
+                        className={`w-full text-left px-2.5 py-1.5 text-[10px] sm:text-xs font-bold rounded-lg transition-all duration-150 flex items-center justify-between ${
+                          s1SelectedAudio === 'none'
+                            ? 'bg-red-600 text-white shadow-[0_0_8px_rgba(220,38,38,0.3)]'
+                            : 'text-neutral-300 hover:text-white hover:bg-white/5'
+                        }`}
+                      >
+                        <span>Original</span>
+                        {s1SelectedAudio === 'none' && <Check className="w-3 h-3" />}
+                      </button>
+                      {s1AudioVersions.map((track) => {
+                        const val = track.subject_id || track.id;
+                        const isSelected = s1SelectedAudio === val;
+                        return (
+                          <button
+                            key={val}
+                            onClick={() => {
+                              handleAudioChange(val);
+                              setActiveDropdown(null);
+                            }}
+                            className={`w-full text-left px-2.5 py-1.5 text-[10px] sm:text-xs font-bold rounded-lg transition-all duration-150 flex items-center justify-between ${
+                              isSelected
+                                ? 'bg-red-600 text-white shadow-[0_0_8px_rgba(220,38,38,0.3)]'
+                                : 'text-neutral-300 hover:text-white hover:bg-white/5'
+                            }`}
+                          >
+                            <span className="truncate max-w-[90px]">
+                              {track.label || track.language || 'Dub'}
+                            </span>
+                            {isSelected && <Check className="w-3 h-3" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 {/* Subtitle Selector */}
                 {s1Subtitles.length > 0 && (
-                  <div className="flex items-center gap-1">
-                    <select
-                      value={s1SelectedSub}
-                      onChange={(e) => handleSubtitleChange(e.target.value)}
-                      className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-neutral-950/80 hover:bg-neutral-900 border border-white/10 rounded-xl text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-neutral-300 hover:text-white cursor-pointer focus:outline-none focus:ring-1 focus:ring-red-600"
+                  <div className="relative">
+                    <button
+                      onClick={() => {
+                        setActiveDropdown(activeDropdown === 'subtitle' ? null : 'subtitle');
+                      }}
+                      className="flex items-center gap-1 px-2 py-1 bg-neutral-950/80 hover:bg-neutral-900 border border-white/10 rounded-xl text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-neutral-300 hover:text-white cursor-pointer focus:outline-none transition-colors"
                     >
-                      <option value="none">Subtitles Off</option>
-                      {s1Subtitles.map((sub) => (
-                        <option key={sub.id} value={sub.id}>
-                          {sub.label || sub.language || 'Subtitle'}
-                        </option>
-                      ))}
-                    </select>
+                      <Subtitles className="w-3.5 h-3.5 mr-0.5 text-neutral-400" />
+                      <span>
+                        {s1SelectedSub === 'none' 
+                          ? 'Subtitles Off' 
+                          : (s1Subtitles.find(s => s.id === s1SelectedSub)?.label || 
+                             s1Subtitles.find(s => s.id === s1SelectedSub)?.language || 
+                             'Subtitle')}
+                      </span>
+                      <ChevronDown className="w-3 h-3 ml-0.5 text-neutral-400" />
+                    </button>
+
+                    {activeDropdown === 'subtitle' && (
+                      <div className="absolute bottom-full right-0 mb-2 z-50 min-w-[130px] max-h-48 overflow-y-auto rounded-xl glass-panel border border-white/15 p-1 flex flex-col gap-0.5 shadow-[0_8px_32px_rgba(0,0,0,0.8)] animate-fade-in bg-neutral-950/95 backdrop-blur-md">
+                        <button
+                          onClick={() => {
+                            handleSubtitleChange('none');
+                            setActiveDropdown(null);
+                          }}
+                          className={`w-full text-left px-2.5 py-1.5 text-[10px] sm:text-xs font-bold rounded-lg transition-all duration-150 flex items-center justify-between ${
+                            s1SelectedSub === 'none'
+                              ? 'bg-red-600 text-white shadow-[0_0_8px_rgba(220,38,38,0.3)]'
+                              : 'text-neutral-300 hover:text-white hover:bg-white/5'
+                          }`}
+                        >
+                          <span>Subtitles Off</span>
+                          {s1SelectedSub === 'none' && <Check className="w-3 h-3" />}
+                        </button>
+                        {s1Subtitles.map((sub) => {
+                          const isSelected = s1SelectedSub === sub.id;
+                          return (
+                            <button
+                              key={sub.id}
+                              onClick={() => {
+                                handleSubtitleChange(sub.id);
+                                setActiveDropdown(null);
+                              }}
+                              className={`w-full text-left px-2.5 py-1.5 text-[10px] sm:text-xs font-bold rounded-lg transition-all duration-150 flex items-center justify-between ${
+                                isSelected
+                                  ? 'bg-red-600 text-white shadow-[0_0_8px_rgba(220,38,38,0.3)]'
+                                  : 'text-neutral-300 hover:text-white hover:bg-white/5'
+                              }`}
+                            >
+                              <span className="truncate max-w-[100px]">
+                                {sub.label || sub.language || 'Subtitle'}
+                              </span>
+                              {isSelected && <Check className="w-3 h-3" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
 
                 {/* Quality Selector */}
                 {s1Qualities.length > 0 && (
-                  <div className="flex items-center gap-1">
-                    <select
-                      value={s1SelectedQuality}
-                      onChange={(e) => handleQualityChange(e.target.value)}
-                      className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-neutral-950/80 hover:bg-neutral-900 border border-white/10 rounded-xl text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-neutral-300 hover:text-white cursor-pointer focus:outline-none focus:ring-1 focus:ring-red-600"
+                  <div className="relative">
+                    <button
+                      onClick={() => {
+                        setActiveDropdown(activeDropdown === 'quality' ? null : 'quality');
+                      }}
+                      className="flex items-center gap-1 px-2 py-1 bg-neutral-950/80 hover:bg-neutral-900 border border-white/10 rounded-xl text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-neutral-300 hover:text-white cursor-pointer focus:outline-none transition-colors"
                     >
-                      {s1Qualities.map((q) => (
-                        <option key={q.label} value={q.label}>
-                          {q.label}
-                        </option>
-                      ))}
-                    </select>
+                      <span>{s1SelectedQuality}</span>
+                      <ChevronDown className="w-3 h-3 ml-0.5 text-neutral-400" />
+                    </button>
+
+                    {activeDropdown === 'quality' && (
+                      <div className="absolute bottom-full right-0 mb-2 z-50 min-w-[90px] rounded-xl glass-panel border border-white/15 p-1 flex flex-col gap-0.5 shadow-[0_8px_32px_rgba(0,0,0,0.8)] animate-fade-in bg-neutral-950/95 backdrop-blur-md">
+                        {s1Qualities.map((q) => {
+                          const isSelected = s1SelectedQuality === q.label;
+                          return (
+                            <button
+                              key={q.label}
+                              onClick={() => {
+                                handleQualityChange(q.label);
+                                setActiveDropdown(null);
+                              }}
+                              className={`w-full text-left px-2.5 py-1.5 text-[10px] sm:text-xs font-bold rounded-lg transition-all duration-150 flex items-center justify-between ${
+                                isSelected
+                                  ? 'bg-red-600 text-white shadow-[0_0_8px_rgba(220,38,38,0.3)]'
+                                  : 'text-neutral-300 hover:text-white hover:bg-white/5'
+                              }`}
+                            >
+                              <span>{q.label}</span>
+                              {isSelected && <Check className="w-3 h-3" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
