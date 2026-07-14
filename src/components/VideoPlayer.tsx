@@ -85,6 +85,7 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
   const lastSavedTimeRef = useRef<number>(0);
   const lastSavedProgressRef = useRef<number>(0);
   const progressLoadedRef = useRef<boolean>(false);
+  const lastMousePosRef = useRef({ x: 0, y: 0 });
 
   // localStorage progress keys
   const getProgressKey = useCallback(() => {
@@ -253,13 +254,26 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
     };
   }, [s1SelectedSub, s1Subtitles, s1StreamUrl]);
 
-  const handleMouseMove = useCallback(() => {
+  const showControlsTemporarily = useCallback(() => {
     setUserActive(true);
     if (activeTimeoutRef.current) clearTimeout(activeTimeoutRef.current);
     activeTimeoutRef.current = setTimeout(() => {
-      setUserActive(false);
-    }, 3000);
+      if (videoRef.current && !videoRef.current.paused) {
+        setUserActive(false);
+      }
+    }, 4000);
   }, []);
+
+  const handleMouseMove = useCallback((e?: React.MouseEvent | MouseEvent) => {
+    if (e && 'clientX' in e && 'clientY' in e) {
+      const { clientX, clientY } = e;
+      if (clientX === lastMousePosRef.current.x && clientY === lastMousePosRef.current.y) {
+        return;
+      }
+      lastMousePosRef.current = { x: clientX, y: clientY };
+    }
+    showControlsTemporarily();
+  }, [showControlsTemporarily]);
 
   const toggleFullscreen = useCallback(() => {
     const container = containerRef.current;
@@ -372,15 +386,19 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
         toggleFullscreen();
       }
     } else {
-      // Single click / Single tap - delay to check if it's a double click
+      // Single click: toggle play/pause on PC, and show controls temporarily
       if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
       clickTimeoutRef.current = setTimeout(() => {
-        setUserActive(prev => !prev);
+        togglePlayPause();
+        showControlsTemporarily();
       }, 250);
     }
   };
 
   const handleTouchStartGesture = (e: React.TouchEvent<HTMLDivElement>) => {
+    // Prevent simulated mouse events
+    e.preventDefault();
+
     if (e.touches.length !== 1) return;
 
     const touch = e.touches[0];
@@ -401,7 +419,6 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
     lastTouchTimeRef.current = now;
 
     if (delay < 300) {
-      e.preventDefault();
       if (clickTimeoutRef.current) {
         clearTimeout(clickTimeoutRef.current);
         clickTimeoutRef.current = null;
@@ -420,9 +437,16 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
         toggleFullscreen();
       }
     } else {
+      // Single tap: toggle controls visibility. If showing, start the 4000ms timeout
       if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
       clickTimeoutRef.current = setTimeout(() => {
-        setUserActive(prev => !prev);
+        setUserActive(prev => {
+          const next = !prev;
+          if (next) {
+            showControlsTemporarily();
+          }
+          return next;
+        });
       }, 250);
     }
   };
@@ -887,7 +911,6 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
     <div
       ref={containerRef}
       onMouseMove={handleMouseMove}
-      onTouchMove={handleMouseMove}
       className="relative w-full h-full bg-black overflow-hidden select-none group/player flex items-center justify-center"
       style={{ cursor: userActive ? 'default' : 'none' }}
     >
@@ -1054,6 +1077,21 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
         </div>
       )}
 
+      {/* ─── Center Play/Pause Button Overlay (Mobile Friendly) ─── */}
+      <div 
+        className={`absolute inset-0 pointer-events-none z-20 flex items-center justify-center transition-opacity duration-300 ${userActive || isPaused ? 'opacity-100' : 'opacity-0'}`}
+      >
+        <button
+          onClick={togglePlayPause}
+          className={`pointer-events-auto p-4 rounded-full glass-panel border border-white/15 text-white hover:text-red-500 hover:scale-110 active:scale-95 transition-all duration-300 shadow-[0_8px_32px_rgba(0,0,0,0.5)] cursor-pointer ${
+            isLoading || (s1Fetching && !s1StreamUrl) ? 'scale-75 opacity-0 pointer-events-none' : 'scale-100 opacity-100'
+          }`}
+          aria-label={isPaused ? "Play" : "Pause"}
+        >
+          {isPaused ? <Play className="w-8 h-8 fill-current translate-x-0.5" /> : <Pause className="w-8 h-8 fill-current" />}
+        </button>
+      </div>
+
       {/* ─── Double Tap / Play Pause Center Overlays ─── */}
       <div className="absolute inset-0 pointer-events-none z-20 flex items-center justify-center">
         {/* Left Seek Feedback */}
@@ -1133,78 +1171,78 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
           </div>
 
           {/* Controls Row */}
-          <div className="flex flex-wrap items-center justify-between gap-y-2 gap-x-3">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             {/* Left Controls Group */}
-            <div className="flex items-center gap-3">
-              {/* Play/Pause Button */}
-              <button
-                onClick={togglePlayPause}
-                className="p-1.5 text-white hover:text-red-500 hover:scale-110 active:scale-95 transition-all cursor-pointer rounded-lg hover:bg-white/5"
-                aria-label={isPaused ? "Play" : "Pause"}
-              >
-                {isPaused ? <Play className="w-5 h-5 fill-current" /> : <Pause className="w-5 h-5 fill-current" />}
-              </button>
+            <div className="flex items-center justify-between sm:justify-start gap-3 w-full sm:w-auto">
+              <div className="flex items-center gap-3">
+                {/* Play/Pause Button */}
+                <button
+                  onClick={togglePlayPause}
+                  className="p-1.5 text-white hover:text-red-500 hover:scale-110 active:scale-95 transition-all cursor-pointer rounded-lg hover:bg-white/5"
+                  aria-label={isPaused ? "Play" : "Pause"}
+                >
+                  {isPaused ? <Play className="w-5 h-5 fill-current" /> : <Pause className="w-5 h-5 fill-current" />}
+                </button>
 
-              {/* Skip Back 10s */}
-              <button
-                onClick={() => {
-                  const video = videoRef.current;
-                  if (video) {
-                    video.currentTime = Math.max(0, video.currentTime - 10);
-                    showDoubleTapFeedback('left');
-                  }
-                }}
-                className="p-1.5 text-white hover:text-red-500 hover:scale-110 active:scale-95 transition-all cursor-pointer rounded-lg hover:bg-white/5 hidden sm:inline-flex"
-                aria-label="Skip backward 10s"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span className="text-[10px] font-bold ml-0.5">10s</span>
-              </button>
-
-              {/* Skip Forward 10s */}
-              <button
-                onClick={() => {
-                  const video = videoRef.current;
-                  if (video) {
-                    video.currentTime = Math.min(video.duration || 0, video.currentTime + 10);
-                    showDoubleTapFeedback('right');
-                  }
-                }}
-                className="p-1.5 text-white hover:text-red-500 hover:scale-110 active:scale-95 transition-all cursor-pointer rounded-lg hover:bg-white/5 hidden sm:inline-flex"
-                aria-label="Skip forward 10s"
-              >
-                <span className="text-[10px] font-bold mr-0.5">10s</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-
-
-
-              {/* Volume Control Group */}
-              <div className="flex items-center gap-1.5 group/volume">
+                {/* Skip Back 10s */}
                 <button
                   onClick={() => {
                     const video = videoRef.current;
                     if (video) {
-                      const newMuteState = !video.muted;
-                      video.muted = newMuteState;
-                      setIsMuted(newMuteState);
+                      video.currentTime = Math.max(0, video.currentTime - 10);
+                      showDoubleTapFeedback('left');
                     }
                   }}
-                  className="p-1.5 text-white hover:text-red-500 hover:scale-110 active:scale-95 transition-all cursor-pointer rounded-lg hover:bg-white/5"
-                  aria-label={isMuted ? "Unmute" : "Mute"}
+                  className="p-1.5 text-white hover:text-red-500 hover:scale-110 active:scale-95 transition-all cursor-pointer rounded-lg hover:bg-white/5 hidden sm:inline-flex"
+                  aria-label="Skip backward 10s"
                 >
-                  {isMuted ? <VolumeX className="w-4.5 h-4.5 text-neutral-400" /> : <Volume2 className="w-4.5 h-4.5" />}
+                  <ArrowLeft className="w-4 h-4" />
+                  <span className="text-[10px] font-bold ml-0.5">10s</span>
                 </button>
-                {/* Desktop volume slider */}
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={isMuted ? 0 : volume}
-                  onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
-                  className="w-0 group-hover/volume:w-16 focus:w-16 h-1 bg-white/20 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:bg-red-600 [&::-webkit-slider-thumb]:rounded-full transition-all duration-300 outline-none hidden sm:block"
-                />
+
+                {/* Skip Forward 10s */}
+                <button
+                  onClick={() => {
+                    const video = videoRef.current;
+                    if (video) {
+                      video.currentTime = Math.min(video.duration || 0, video.currentTime + 10);
+                      showDoubleTapFeedback('right');
+                    }
+                  }}
+                  className="p-1.5 text-white hover:text-red-500 hover:scale-110 active:scale-95 transition-all cursor-pointer rounded-lg hover:bg-white/5 hidden sm:inline-flex"
+                  aria-label="Skip forward 10s"
+                >
+                  <span className="text-[10px] font-bold mr-0.5">10s</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+
+                {/* Volume Control Group */}
+                <div className="flex items-center gap-1.5 group/volume">
+                  <button
+                    onClick={() => {
+                      const video = videoRef.current;
+                      if (video) {
+                        const newMuteState = !video.muted;
+                        video.muted = newMuteState;
+                        setIsMuted(newMuteState);
+                      }
+                    }}
+                    className="p-1.5 text-white hover:text-red-500 hover:scale-110 active:scale-95 transition-all cursor-pointer rounded-lg hover:bg-white/5"
+                    aria-label={isMuted ? "Unmute" : "Mute"}
+                  >
+                    {isMuted ? <VolumeX className="w-4.5 h-4.5 text-neutral-400" /> : <Volume2 className="w-4.5 h-4.5" />}
+                  </button>
+                  {/* Desktop volume slider */}
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={isMuted ? 0 : volume}
+                    onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
+                    className="w-0 group-hover/volume:w-16 focus:w-16 h-1 bg-white/20 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:bg-red-600 [&::-webkit-slider-thumb]:rounded-full transition-all duration-300 outline-none hidden sm:block"
+                  />
+                </div>
               </div>
 
               {/* Time Code Display */}
@@ -1214,60 +1252,62 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
             </div>
 
             {/* Right Controls Group */}
-            <div className="flex items-center gap-2">
-              {/* Dub selector */}
-              <div className="flex items-center gap-1">
-                <select
-                  value={s1SelectedAudio}
-                  onChange={(e) => handleAudioChange(e.target.value)}
-                  disabled={s1Fetching && s1AudioVersions.length === 0}
-                  className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-neutral-950/80 hover:bg-neutral-900 border border-white/10 rounded-xl text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-neutral-300 hover:text-white cursor-pointer focus:outline-none focus:ring-1 focus:ring-red-600 disabled:opacity-40"
-                >
-                  <option value="none">
-                    {s1Fetching && s1AudioVersions.length === 0 ? 'Loading...' : 'Original'}
-                  </option>
-                  {s1AudioVersions.map((track) => (
-                    <option key={track.subject_id || track.id} value={track.subject_id || track.id}>
-                      {track.label || track.language || 'Dub'}
+            <div className="flex items-center justify-between sm:justify-end gap-2 w-full sm:w-auto">
+              <div className="flex items-center gap-2">
+                {/* Dub selector */}
+                <div className="flex items-center gap-1">
+                  <select
+                    value={s1SelectedAudio}
+                    onChange={(e) => handleAudioChange(e.target.value)}
+                    disabled={s1Fetching && s1AudioVersions.length === 0}
+                    className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-neutral-950/80 hover:bg-neutral-900 border border-white/10 rounded-xl text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-neutral-300 hover:text-white cursor-pointer focus:outline-none focus:ring-1 focus:ring-red-600 disabled:opacity-40"
+                  >
+                    <option value="none">
+                      {s1Fetching && s1AudioVersions.length === 0 ? 'Loading...' : 'Original'}
                     </option>
-                  ))}
-                </select>
+                    {s1AudioVersions.map((track) => (
+                      <option key={track.subject_id || track.id} value={track.subject_id || track.id}>
+                        {track.label || track.language || 'Dub'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Subtitle Selector */}
+                {s1Subtitles.length > 0 && (
+                  <div className="flex items-center gap-1">
+                    <select
+                      value={s1SelectedSub}
+                      onChange={(e) => handleSubtitleChange(e.target.value)}
+                      className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-neutral-950/80 hover:bg-neutral-900 border border-white/10 rounded-xl text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-neutral-300 hover:text-white cursor-pointer focus:outline-none focus:ring-1 focus:ring-red-600"
+                    >
+                      <option value="none">Subtitles Off</option>
+                      {s1Subtitles.map((sub) => (
+                        <option key={sub.id} value={sub.id}>
+                          {sub.label || sub.language || 'Subtitle'}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Quality Selector */}
+                {s1Qualities.length > 0 && (
+                  <div className="flex items-center gap-1">
+                    <select
+                      value={s1SelectedQuality}
+                      onChange={(e) => handleQualityChange(e.target.value)}
+                      className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-neutral-950/80 hover:bg-neutral-900 border border-white/10 rounded-xl text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-neutral-300 hover:text-white cursor-pointer focus:outline-none focus:ring-1 focus:ring-red-600"
+                    >
+                      {s1Qualities.map((q) => (
+                        <option key={q.label} value={q.label}>
+                          {q.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
-
-              {/* Subtitle Selector */}
-              {s1Subtitles.length > 0 && (
-                <div className="flex items-center gap-1">
-                  <select
-                    value={s1SelectedSub}
-                    onChange={(e) => handleSubtitleChange(e.target.value)}
-                    className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-neutral-950/80 hover:bg-neutral-900 border border-white/10 rounded-xl text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-neutral-300 hover:text-white cursor-pointer focus:outline-none focus:ring-1 focus:ring-red-600"
-                  >
-                    <option value="none">Subtitles Off</option>
-                    {s1Subtitles.map((sub) => (
-                      <option key={sub.id} value={sub.id}>
-                        {sub.label || sub.language || 'Subtitle'}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {/* Quality Selector */}
-              {s1Qualities.length > 0 && (
-                <div className="flex items-center gap-1">
-                  <select
-                    value={s1SelectedQuality}
-                    onChange={(e) => handleQualityChange(e.target.value)}
-                    className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-neutral-950/80 hover:bg-neutral-900 border border-white/10 rounded-xl text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-neutral-300 hover:text-white cursor-pointer focus:outline-none focus:ring-1 focus:ring-red-600"
-                  >
-                    {s1Qualities.map((q) => (
-                      <option key={q.label} value={q.label}>
-                        {q.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
 
               {/* Fullscreen Button */}
               <button
