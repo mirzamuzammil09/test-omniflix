@@ -20,19 +20,7 @@ const LANGUAGE_NAMES: Record<string, string> = {
 type ActiveServer = 'server1' | 'server2';
 
 export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: VideoPlayerProps) {
-  const [devToolsDetected, setDevToolsDetected] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    const threshold = 160;
-    const widthDiff = window.outerWidth - window.innerWidth;
-    const heightDiff = window.outerHeight - window.innerHeight;
-    if (
-      (widthDiff > threshold || heightDiff > threshold) &&
-      window.innerWidth > 400 && window.innerHeight > 400
-    ) {
-      return true;
-    }
-    return false;
-  });
+  const devToolsDetected = false;
   const [isLoading, setIsLoading] = useState(true);
   const [isPaused, setIsPaused] = useState(true);
   const [activeServer, setActiveServer] = useState<ActiveServer>('server1');
@@ -138,98 +126,18 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
     };
   }, [tmdbId, type, season, episode]);
 
-  // DevTools and Scraper prevention system
+  // Right-click prevention (Relaxed for Iframe usage)
   useEffect(() => {
-    // 1. Disable right click
     const preventContextMenu = (e: MouseEvent) => {
       e.preventDefault();
     };
     document.addEventListener('contextmenu', preventContextMenu);
-
-    // 2. Disable keyboard shortcut commands for DevTools
-    const preventKeys = (e: KeyboardEvent) => {
-      // F12 key
-      if (e.key === 'F12') {
-        e.preventDefault();
-        return false;
-      }
-      // Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+Shift+C, Ctrl+U
-      if (
-        (e.ctrlKey || e.metaKey) &&
-        (e.shiftKey && (e.key === 'I' || e.key === 'i' || e.key === 'J' || e.key === 'j' || e.key === 'C' || e.key === 'c') ||
-          e.key === 'U' || e.key === 'u' || e.key === 'S' || e.key === 's')
-      ) {
-        e.preventDefault();
-        return false;
-      }
-    };
-    document.addEventListener('keydown', preventKeys);
-
-    // 3. Timing-based debugger detection
-    const detect = () => {
-      const start = performance.now();
-      debugger;
-      const end = performance.now();
-      if (end - start > 50) {
-        setDevToolsDetected(true);
-        setS1StreamUrl(null);
-        return true;
-      }
-      return false;
-    };
-
-    // 4. Viewport size-based detection
-    const detectBySize = () => {
-      const threshold = 160;
-      const widthDiff = window.outerWidth - window.innerWidth;
-      const heightDiff = window.outerHeight - window.innerHeight;
-      if (
-        (widthDiff > threshold || heightDiff > threshold) &&
-        window.innerWidth > 400 && window.innerHeight > 400
-      ) {
-        setDevToolsDetected(true);
-        setS1StreamUrl(null);
-        return true;
-      }
-      return false;
-    };
-
-    const checkInterval = setInterval(() => {
-      if (detect() || detectBySize()) {
-        clearInterval(checkInterval);
-      }
-    }, 500);
-
     return () => {
       document.removeEventListener('contextmenu', preventContextMenu);
-      document.removeEventListener('keydown', preventKeys);
-      clearInterval(checkInterval);
     };
   }, []);
 
-  // Redirect to YouTube in a new tab and close/clear the current tab when DevTools is detected
-  useEffect(() => {
-    if (devToolsDetected) {
-      const targetUrl = 'https://youtu.be/jy4qYmf3TxA?si=Nu7WAz9owc1dPnfo';
-      try {
-        const opened = window.open(targetUrl, '_blank');
-        if (!opened) {
-          // Popup blocker intercepted, fallback to redirecting current tab
-          window.location.replace(targetUrl);
-          return;
-        }
-      } catch (e) {
-        window.location.replace(targetUrl);
-        return;
-      }
-      try {
-        window.open('', '_self');
-        window.close();
-      } catch (e) { }
-      // Fallback: clear the current page to about:blank so they can't inspect the player
-      window.location.replace('about:blank');
-    }
-  }, [devToolsDetected]);
+  // Redirection guard removed to allow embedding player in iframe and Zoom resize support.
 
   // Restore playback progress
   useEffect(() => {
