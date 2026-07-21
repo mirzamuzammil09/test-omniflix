@@ -1189,15 +1189,38 @@ export async function POST(request: NextRequest) {
         }
 
         if (rawUrl) {
-          // Direct frontend fetch as requested to reduce server load
-          streamUrl = rawUrl;
+          const proxyEndpoint = process.env.EXTERNAL_PROXY_URL || `${baseUrl}/api/proxy`;
+
+          const cleanedHeaders = cleanPlaybackHeaders(playbackHeaders) || {
+            "origin": "https://netfilm.world",
+            "referer": "https://netfilm.world/",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+          };
+
+          const params = new URLSearchParams();
+          params.set("url", rawUrl);
+          params.set("headers", JSON.stringify(cleanedHeaders));
+          streamUrl = `${proxyEndpoint}?${params.toString()}`;
         }
 
         if (qInfo.qualities?.length > 0) {
           qualities = qInfo.qualities.map((q: any) => {
+            const qProxyEndpoint = process.env.EXTERNAL_PROXY_URL || `${baseUrl}/api/proxy`;
+
+            const qCleanedHeaders = cleanPlaybackHeaders(q.playback_headers || playbackHeaders) || {
+              "origin": "https://netfilm.world",
+              "referer": "https://netfilm.world/",
+              "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+            };
+
+            const qParams = new URLSearchParams();
+            qParams.set("url", q.url);
+            qParams.set("headers", JSON.stringify(qCleanedHeaders));
+            const proxiedUrl = `${qProxyEndpoint}?${qParams.toString()}`;
+
             return {
               label: q.label || `${q.resolution}p` || "Unknown",
-              url: q.url
+              url: proxiedUrl
             };
           });
         }
