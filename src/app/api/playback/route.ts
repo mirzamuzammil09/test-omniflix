@@ -26,6 +26,21 @@ const cleanTitle = (title: string): string => {
 };
 
 const isExpired = (url?: string | null): boolean => {
+  if (!url) return true;
+  try {
+    const parsedUrl = new URL(url);
+    const tParam = parsedUrl.searchParams.get("t");
+    if (tParam) {
+      const timestamp = parseInt(tParam, 10);
+      const now = Math.floor(Date.now() / 1000);
+      // If the URL is more than 1 hour (3600s) old, consider it expired
+      if (now - timestamp > 3600) {
+        return true;
+      }
+    }
+  } catch (e) {
+    // Ignore invalid URLs
+  }
   return false;
 };
 
