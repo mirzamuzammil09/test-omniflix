@@ -1189,7 +1189,7 @@ export async function POST(request: NextRequest) {
         }
 
         if (rawUrl) {
-          const proxyEndpoint = process.env.EXTERNAL_PROXY_URL || `${baseUrl}/api/proxy`;
+          const proxyEndpoint = process.env.EXTERNAL_PROXY_URL || "https://omniflix.mgemers07.workers.dev";
 
           const cleanedHeaders = cleanPlaybackHeaders(playbackHeaders) || {
             "origin": "https://netfilm.world",
@@ -1205,7 +1205,7 @@ export async function POST(request: NextRequest) {
 
         if (qInfo.qualities?.length > 0) {
           qualities = qInfo.qualities.map((q: any) => {
-            const qProxyEndpoint = process.env.EXTERNAL_PROXY_URL || `${baseUrl}/api/proxy`;
+            const qProxyEndpoint = process.env.EXTERNAL_PROXY_URL || "https://omniflix.mgemers07.workers.dev";
 
             const qCleanedHeaders = cleanPlaybackHeaders(q.playback_headers || playbackHeaders) || {
               "origin": "https://netfilm.world",
