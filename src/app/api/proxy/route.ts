@@ -23,12 +23,7 @@ export async function GET(request: NextRequest) {
     // ignore
   }
 
-  // Inject random IP headers to bypass CDN IP-blocks on Netlify AWS nodes
-  const randomIP = `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
-  headers.set('X-Forwarded-For', randomIP);
-  headers.set('X-Real-IP', randomIP);
-  headers.set('True-Client-IP', randomIP);
-  headers.set('CF-Connecting-IP', randomIP);
+  // Removed random IP headers as Cloudflare blocks spoofed CF-Connecting-IP headers
 
   // Forward range requests
   const range = request.headers.get('range');
