@@ -8,6 +8,12 @@ const logDebug = (msg: string) => {
   console.log(`[Playback-Debug] ${msg}`);
 };
 
+const isServerless =
+  process.env.VERCEL === "1" ||
+  process.env.NETLIFY === "true" ||
+  process.env.NODE_ENV === "production" ||
+  process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined;
+
 const cleanTitle = (title: string): string => {
   if (!title) return "";
   return title
@@ -539,12 +545,6 @@ function requestWithProxy(urlStr: string, options: any = {}): Promise<any> {
 }
 
 async function fetchBoredflixWithFallback(url: string, options: any = {}): Promise<any> {
-  const isServerless =
-    process.env.VERCEL === "1" ||
-    process.env.NETLIFY === "true" ||
-    process.env.NODE_ENV === "production" ||
-    process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined;
-
   // 1. Direct Fetch
   // In serverless environments, hosting IPs (Vercel/Netlify) are 100% blocked by Cloudflare.
   // Skipping direct fetch entirely in serverless avoids wasting time (1.2s per request).
