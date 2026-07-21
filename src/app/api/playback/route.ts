@@ -639,8 +639,9 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
       }
     };
 
-    // Safety timeout to ensure we return before execution limit (use 6.5s for serverless, 12s for local dev)
-    const timeoutDuration = isServerless ? 6500 : 12000;
+    // Safety timeout to ensure we return before execution limit (Netlify 10s limit)
+    // For serverless, we must cap this tightly to ~4.5s so 2 sequential fetches take 9s max.
+    const timeoutDuration = isServerless ? 4500 : 12000;
     const overallTimeout = setTimeout(() => {
       if (!resolved) {
         resolved = true;
@@ -911,7 +912,7 @@ export async function POST(request: NextRequest) {
               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             },
             cache: "no-store",
-            signal: AbortSignal.timeout(Math.min(5000, getRemainingTimeout(1000)))
+            signal: AbortSignal.timeout(isServerless ? 4500 : Math.min(5000, getRemainingTimeout(1000)))
           });
           if (versionRes.ok) {
             const versionData = await versionRes.json();
