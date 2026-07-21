@@ -70,7 +70,8 @@ function fetchFromTMDB<T>(endpoint: string, queryParams: Record<string, string |
         next: { revalidate: cacheSeconds }, // Enable dynamic ISR caching globally
         headers: {
           'Accept': 'application/json',
-        }
+        },
+        signal: AbortSignal.timeout(3000)
       });
 
       if (!res.ok) {

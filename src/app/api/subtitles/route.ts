@@ -23,12 +23,11 @@ export async function GET(request: NextRequest) {
 
     const srtText = await res.text();
 
-    // Convert SRT to WebVTT format
-    const vttText = "WEBVTT\n\n" + srtText
-      .replace(/\r\n/g, "\n")
-      .replace(/\r/g, "\n")
-      .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2");
-
+    // Convert SRT to WebVTT format safely
+    let vttText = srtText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    if (!vttText.trim().toUpperCase().startsWith("WEBVTT")) {
+      vttText = "WEBVTT\n\n" + vttText.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2");
+    }
     return new NextResponse(vttText, {
       headers: {
         "Content-Type": "text/vtt; charset=utf-8",

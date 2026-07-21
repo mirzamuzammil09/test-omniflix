@@ -76,7 +76,44 @@ function extractRootAudioVersion(streamObj: any): any | null {
 // Keep a local in-memory cache of proxies so we don't fetch from proxyscrape on every single request
 let cachedProxiesList: string[] = [];
 let cachedProxiesTime = 0;
-let lastWorkingProxy: string | null = null;
+let workingProxies: string[] = [];
+
+// Track when direct fetch to boredflix.cc is blocked (e.g. CF-blocked on local dev IP).
+// After first confirmed failure, skip the 4.5s direct-fetch wasted round-trip for this process lifetime.
+let directFetchBlocked = false;
+let directFetchBlockedUntil = 0;
+
+// Fallback hardcoded proxies to use if both proxyscrape and monosans fail or time out.
+const fallbackProxiesList: string[] = [
+  "103.152.112.162:80",
+  "20.206.106.190:80",
+  "20.219.180.149:3128",
+  "18.143.215.35:80",
+  "20.24.43.214:80",
+  "34.23.45.223:80",
+  "47.251.43.115:80",
+  "20.205.61.143:80",
+  "20.197.81.104:80",
+  "20.219.176.48:3128",
+  "8.219.97.248:80",
+  "20.235.159.51:80",
+  "20.24.111.4:80",
+  "103.149.130.38:80",
+  "103.152.112.120:80",
+  "47.254.80.204:80",
+  "20.210.113.33:80",
+  "103.49.202.252:80",
+  "20.205.47.166:80",
+  "43.134.195.122:3128",
+  "47.88.3.174:8080",
+  "47.251.70.179:80",
+  "47.89.255.253:8080",
+  "117.250.3.58:8080",
+  "20.205.107.189:80",
+  "20.206.101.44:80",
+  "20.210.26.179:80",
+  "20.205.110.148:80"
+];
 
 async function getFreeProxies(): Promise<string[]> {
   const now = Date.now();
@@ -85,42 +122,97 @@ async function getFreeProxies(): Promise<string[]> {
     return cachedProxiesList;
   }
 
-  try {
-    logDebug(`[Proxy] Fetching fresh free proxy list from proxyscrape...`);
-    const res = await fetch("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=2000&country=all&ssl=yes&anonymity=all");
-    if (res.ok) {
+  logDebug(`[Proxy] Fetching proxy lists in parallel...`);
+
+  const fetchProxyscrape = async () => {
+    try {
+      const res = await fetch("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=yes&anonymity=all", {
+        signal: AbortSignal.timeout(5000)
+      });
+      if (!res.ok) throw new Error("Proxyscrape error " + res.status);
       const text = await res.text();
       const list = text.split("\n").map(p => p.trim()).filter(Boolean);
-      if (list.length > 0) {
-        cachedProxiesList = list;
-        cachedProxiesTime = now;
-        logDebug(`[Proxy] Successfully cached ${list.length} proxies from proxyscrape`);
-        return list;
-      }
+      if (list.length === 0) throw new Error("Proxyscrape empty");
+      return list;
+    } catch (e: any) {
+      logDebug(`[Proxy] Proxyscrape fetch failed: ${e.message}`);
+      throw e;
     }
-  } catch (e: any) {
-    logDebug(`[Proxy] Failed to fetch free proxy list from proxyscrape: ${e.message}`);
-  }
+  };
 
-  // Fallback to monosans github list to make it extremely resilient
-  try {
-    logDebug(`[Proxy] Fetching fallback proxy list from monosans github...`);
-    const res = await fetch("https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt");
-    if (res.ok) {
+  const fetchMonosans = async () => {
+    try {
+      const res = await fetch("https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt", {
+        signal: AbortSignal.timeout(5000)
+      });
+      if (!res.ok) throw new Error("Monosans error " + res.status);
       const text = await res.text();
       const list = text.split("\n").map(p => p.trim()).filter(Boolean);
-      if (list.length > 0) {
-        cachedProxiesList = list;
-        cachedProxiesTime = now;
-        logDebug(`[Proxy] Successfully cached ${list.length} proxies from monosans github`);
-        return list;
-      }
+      if (list.length === 0) throw new Error("Monosans empty");
+      return list;
+    } catch (e: any) {
+      logDebug(`[Proxy] Monosans fetch failed: ${e.message}`);
+      throw e;
     }
-  } catch (e: any) {
-    logDebug(`[Proxy] Failed to fetch free proxy list from monosans: ${e.message}`);
+  };
+
+  const fetchTheSpeedX = async () => {
+    try {
+      const res = await fetch("https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt", {
+        signal: AbortSignal.timeout(5000)
+      });
+      if (!res.ok) throw new Error("TheSpeedX error " + res.status);
+      const text = await res.text();
+      const list = text.split("\n").map(p => p.trim()).filter(Boolean);
+      if (list.length === 0) throw new Error("TheSpeedX empty");
+      return list;
+    } catch (e: any) {
+      logDebug(`[Proxy] TheSpeedX fetch failed: ${e.message}`);
+      throw e;
+    }
+  };
+
+  const fetchPrxchk = async () => {
+    try {
+      const res = await fetch("https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt", {
+        signal: AbortSignal.timeout(5000)
+      });
+      if (!res.ok) throw new Error("Prxchk error " + res.status);
+      const text = await res.text();
+      const list = text.split("\n").map(p => p.trim()).filter(Boolean);
+      if (list.length === 0) throw new Error("Prxchk empty");
+      return list;
+    } catch (e: any) {
+      logDebug(`[Proxy] Prxchk fetch failed: ${e.message}`);
+      throw e;
+    }
+  };
+
+  const results = await Promise.allSettled([fetchProxyscrape(), fetchMonosans(), fetchTheSpeedX(), fetchPrxchk()]);
+  const combinedList: string[] = [];
+  results.forEach(r => {
+    if (r.status === "fulfilled" && r.value.length > 0) {
+      combinedList.push(...r.value);
+    }
+  });
+
+  if (combinedList.length > 0) {
+    const uniqueList = Array.from(new Set(combinedList));
+    cachedProxiesList = uniqueList;
+    cachedProxiesTime = now;
+    logDebug(`[Proxy] Successfully cached ${uniqueList.length} unique proxies from parallel fetch`);
+    return uniqueList;
   }
 
-  return cachedProxiesList;
+  logDebug(`[Proxy] All parallel proxy fetches failed. Using fallback list.`);
+  if (cachedProxiesList.length > 0) {
+    return cachedProxiesList;
+  }
+
+  // DO NOT cache the fallback list for 30 minutes, because if fetching failed due to a temporary
+  // timeout, we don't want to be stuck with dead hardcoded proxies for half an hour!
+  logDebug(`[Proxy] Cached fallback list (${fallbackProxiesList.length} proxies) but NOT setting cache time to allow retry on next request.`);
+  return fallbackProxiesList;
 }
 
 function decodeChunkedBody(bodyBuffer: Buffer): Buffer {
@@ -210,7 +302,7 @@ function requestWithProxy(urlStr: string, options: any = {}): Promise<any> {
       const proxyUrl = new URL(options.proxy);
 
       const proxyHost = proxyUrl.hostname;
-      const proxyPort = parseInt(proxyUrl.port || "8080", 10);
+      const proxyPort = proxyUrl.port ? parseInt(proxyUrl.port, 10) : (proxyUrl.protocol === "https:" ? 443 : 80);
 
       const targetHost = parsedUrl.hostname;
       const targetPort = parsedUrl.port || (parsedUrl.protocol === "https:" ? "443" : "80");
@@ -332,7 +424,7 @@ function requestWithProxy(urlStr: string, options: any = {}): Promise<any> {
                   JSON.parse(bodyStr);
                   isJson = true;
                 }
-              } catch (e) {}
+              } catch (e) { }
 
               if (!isJson) {
                 safeReject(new Error("Proxy returned invalid/non-JSON response (likely a Cloudflare block page or Gateway error)"));
@@ -398,7 +490,7 @@ function requestWithProxy(urlStr: string, options: any = {}): Promise<any> {
                   JSON.parse(data);
                   isJson = true;
                 }
-              } catch (e) {}
+              } catch (e) { }
 
               if (!isJson) {
                 safeReject(new Error("Proxy returned invalid/non-JSON response (likely a Cloudflare block page or Gateway error)"));
@@ -432,62 +524,70 @@ function requestWithProxy(urlStr: string, options: any = {}): Promise<any> {
 }
 
 async function fetchBoredflixWithFallback(url: string, options: any = {}): Promise<any> {
-  const isServerless = 
-    process.env.VERCEL === "1" || 
+  const isServerless =
+    process.env.VERCEL === "1" ||
     process.env.NETLIFY === "true" ||
     process.env.NODE_ENV === "production" ||
     process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined;
 
-  // 1. If we have a cached working proxy, try it first to avoid spawning parallel requests
-  if (lastWorkingProxy) {
+  // 1. Direct Fetch
+  // In serverless environments, hosting IPs (Vercel/Netlify) are 100% blocked by Cloudflare.
+  // Skipping direct fetch entirely in serverless avoids wasting time (1.2s per request).
+  // In local development, direct fetch is attempted — but once we confirm the IP is blocked
+  // (CF block / timeout), we set directFetchBlocked=true to skip all future direct attempts
+  // in this process lifetime, eliminating the 4.5s wasted round-trip on every subsequent call.
+  const now = Date.now();
+  const isDirectBlocked = directFetchBlocked && now < directFetchBlockedUntil;
+  if (!isServerless && !isDirectBlocked) {
+    const directTimeout = 4500;
     try {
-      logDebug(`[Proxy-Client] Trying cached working proxy: http://${lastWorkingProxy}`);
-      const res = await requestWithProxy(url, {
-        ...options,
-        proxy: `http://${lastWorkingProxy}`,
-        timeout: 2500,
-      });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), directTimeout);
+
+      const onAbort = () => {
+        controller.abort();
+      };
+      if (options.signal) {
+        if (options.signal.aborted) {
+          throw new Error("Aborted");
+        }
+        options.signal.addEventListener('abort', onAbort);
+      }
+
+      const directOptions = { ...options, signal: controller.signal };
+
+      logDebug(`[Proxy-Client] Attempting direct fetch to ${url} (Timeout: ${directTimeout}ms)...`);
+      const res = await fetch(url, directOptions);
+      clearTimeout(timer);
+      if (options.signal) {
+        options.signal.removeEventListener('abort', onAbort);
+      }
+
       if (res.ok) {
-        logDebug(`[Proxy-Client] Cached working proxy http://${lastWorkingProxy} succeeded!`);
+        // Direct fetch worked — site is reachable, clear blocked flag
+        directFetchBlocked = false;
+        logDebug(`[Proxy-Client] Direct fetch succeeded for ${url}`);
         return res;
       }
-      logDebug(`[Proxy-Client] Cached working proxy http://${lastWorkingProxy} returned status: ${res.status}`);
-      lastWorkingProxy = null; // Clear if it returns error/non-OK
+
+      if (res.status === 403) {
+        directFetchBlocked = true;
+        directFetchBlockedUntil = Date.now() + 5 * 60 * 1000; // 5 min
+        logDebug(`[Proxy-Client] Direct fetch blocked (403) for ${url}. Marking blocked for 5min. Switching to proxy fallback.`);
+      } else {
+        logDebug(`[Proxy-Client] Direct fetch returned status ${res.status} for ${url}. Switching to proxy fallback.`);
+      }
     } catch (err: any) {
-      logDebug(`[Proxy-Client] Cached working proxy http://${lastWorkingProxy} failed: ${err.message}`);
-      lastWorkingProxy = null; // Clear on connection error
+      // Timeout or network error — mark as blocked so we don't repeat this waste
+      directFetchBlocked = true;
+      directFetchBlockedUntil = Date.now() + 30 * 1000; // 30 seconds
+      logDebug(`[Proxy-Client] Direct fetch failed/timed out for ${url}: ${err.message}. Marking blocked for 30s. Switching to proxy fallback.`);
     }
+  } else if (isDirectBlocked) {
+    logDebug(`[Proxy-Client] Direct fetch skipped (known blocked, ${Math.ceil((directFetchBlockedUntil - now) / 1000)}s remaining). Going straight to proxy.`);
   }
 
-  // 2. Try Direct Fetch first
-  // In serverless, we do a very quick direct fetch attempt (1.2s timeout).
-  // If it succeeds (e.g. if Cloudflare bypasses or Vercel region is not blocked), we avoid proxying completely!
-  // If it is blocked (returns 403 instantly) or times out (takes 1.2s), we fallback to proxy.
-  const directTimeout = isServerless ? 1200 : 4500;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), directTimeout);
-    const directOptions = { ...options, signal: controller.signal };
-
-    logDebug(`[Proxy-Client] Attempting direct fetch to ${url} (Timeout: ${directTimeout}ms)...`);
-    const res = await fetch(url, directOptions);
-    clearTimeout(timer);
-
-    if (res.ok) {
-      logDebug(`[Proxy-Client] Direct fetch succeeded for ${url}`);
-      return res;
-    }
-
-    if (res.status === 403) {
-      logDebug(`[Proxy-Client] Direct fetch blocked (403) for ${url}. Switching to proxy fallback.`);
-    } else {
-      logDebug(`[Proxy-Client] Direct fetch returned status ${res.status} for ${url}. Switching to proxy fallback.`);
-    }
-  } catch (err: any) {
-    logDebug(`[Proxy-Client] Direct fetch failed/timed out for ${url}: ${err.message}. Switching to proxy fallback.`);
-  }
-
-  // 3. Fallback to Proxy Rotation
+  // 2. Proxy Rotation
   const proxies = await getFreeProxies();
   if (proxies.length === 0) {
     logDebug(`[Proxy-Client] No backup proxies available, throwing error`);
@@ -495,9 +595,17 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
   }
 
   const shuffled = [...proxies].sort(() => 0.5 - Math.random());
-  // Test fewer proxies in parallel on serverless to avoid saturating resources (10 instead of 15)
-  const maxParallel = isServerless ? 10 : 15;
+  // Test fewer proxies in parallel on serverless to avoid saturating resources
+  const maxParallel = isServerless ? 15 : 30;
   const testProxies = shuffled.slice(0, maxParallel);
+
+  // Prepend recent working proxies to test in parallel at the front of the list.
+  workingProxies.forEach(proxy => {
+    if (!testProxies.includes(proxy)) {
+      testProxies.unshift(proxy);
+    }
+  });
+
   logDebug(`[Proxy-Client] Testing ${testProxies.length} proxies in parallel for URL: ${url}`);
 
   return new Promise((resolve, reject) => {
@@ -506,11 +614,37 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
     const errors: any[] = [];
     const abortControllers: AbortController[] = [];
 
-    // Safety timeout to ensure we return before execution limit (use 6.5s for serverless, 9s for local dev)
-    const timeoutDuration = isServerless ? 6500 : 9000;
+    // Link options.signal to abort all proxy abortControllers
+    const parentAbortHandler = () => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(overallTimeout);
+        abortControllers.forEach(ctrl => ctrl.abort());
+        reject(new Error("Request aborted by client/timeout"));
+      }
+    };
+
+    if (options.signal) {
+      if (options.signal.aborted) {
+        reject(new Error("Request aborted by client/timeout"));
+        return;
+      }
+      options.signal.addEventListener('abort', parentAbortHandler);
+    }
+
+    const cleanup = () => {
+      clearTimeout(overallTimeout);
+      if (options.signal) {
+        options.signal.removeEventListener('abort', parentAbortHandler);
+      }
+    };
+
+    // Safety timeout to ensure we return before execution limit (use 6.5s for serverless, 12s for local dev)
+    const timeoutDuration = isServerless ? 6500 : 12000;
     const overallTimeout = setTimeout(() => {
       if (!resolved) {
         resolved = true;
+        cleanup();
         abortControllers.forEach(ctrl => ctrl.abort());
         reject(new Error("All proxy attempts timed out (Overall Timeout)"));
       }
@@ -530,13 +664,18 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
           if (resolved) return;
           if (res.ok) {
             resolved = true;
-            clearTimeout(overallTimeout);
+            cleanup();
             abortControllers.forEach(ctrl => ctrl.abort());
             logDebug(`[Proxy-Client] Parallel Proxy http://${proxy} succeeded!`);
-            
+
             // Cache the successful proxy in memory for subsequent requests
-            lastWorkingProxy = proxy;
-            
+            if (!workingProxies.includes(proxy)) {
+              workingProxies.unshift(proxy);
+              if (workingProxies.length > 5) {
+                workingProxies.pop();
+              }
+            }
+
             resolve(res);
           } else {
             throw new Error(`Non-OK status: ${res.status}`);
@@ -549,7 +688,7 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
           completedCount++;
           if (completedCount === testProxies.length && !resolved) {
             resolved = true;
-            clearTimeout(overallTimeout);
+            cleanup();
             reject(new Error(`All ${testProxies.length} proxy attempts failed: ` + errors.map(e => e.message).join(", ")));
           }
         });
@@ -604,51 +743,43 @@ export async function POST(request: NextRequest) {
   const origin = request.headers.get("origin");
   const hostHeader = request.headers.get("host") || "";
   const xForwardedHost = request.headers.get("x-forwarded-host") || "";
-  
+  const proto = request.headers.get("x-forwarded-proto") || "http";
+  const baseUrl = `${proto}://${hostHeader || "localhost:3000"}`;
+
   const host = (xForwardedHost.split(",")[0] || hostHeader || "").split(":")[0].trim();
   const isLocalhost = host.includes("localhost") || host.includes("127.0.0.1") || !host;
 
   if (!isLocalhost) {
-    // If both referer and origin are missing, reject immediately to block direct script calling
-    if (!referer && !origin) {
-      logDebug(`[Guard] Blocked request from missing referer and origin headers (Host: ${host})`);
-      return NextResponse.json({ error: "Unauthorized: API requests must originate from the website" }, { status: 403 });
-    }
-
     if (referer) {
       try {
         const refererUrl = new URL(referer);
-        const refererHost = refererUrl.hostname;
-        const isDomainMatched = refererHost === host || 
-                                refererHost.endsWith("." + host) || 
-                                host.endsWith("." + refererHost);
-
-        if (!isDomainMatched) {
-          logDebug(`[Guard] Blocked request from referer ${refererHost} for host ${host}`);
-          return NextResponse.json({ error: "Unauthorized: Hotlinking is forbidden" }, { status: 403 });
-        }
+        logDebug(`[Guard] Permitted referer: ${refererUrl.hostname} for host ${host} (Iframe embed allowed)`);
       } catch (e) {
-        return NextResponse.json({ error: "Invalid request source" }, { status: 400 });
+        logDebug(`[Guard] Permitted referer (invalid format): ${referer} for host ${host}`);
       }
+    } else {
+      logDebug(`[Guard] Request missing referer header for host ${host}`);
     }
 
     if (origin) {
       try {
         const originUrl = new URL(origin);
-        const originHost = originUrl.hostname;
-        const isDomainMatched = originHost === host || 
-                                originHost.endsWith("." + host) || 
-                                host.endsWith("." + originHost);
-
-        if (!isDomainMatched) {
-          logDebug(`[Guard] Blocked request from origin ${originHost} for host ${host}`);
-          return NextResponse.json({ error: "Unauthorized: Cross-origin requests are forbidden" }, { status: 403 });
-        }
+        logDebug(`[Guard] Permitted origin: ${originUrl.hostname} for host ${host} (Iframe embed allowed)`);
       } catch (e) {
-        return NextResponse.json({ error: "Invalid request source" }, { status: 400 });
+        logDebug(`[Guard] Permitted origin (invalid format): ${origin} for host ${host}`);
       }
+    } else {
+      logDebug(`[Guard] Request missing origin header for host ${host}`);
     }
   }
+
+  const requestStart = Date.now();
+  const MAX_REQUEST_TIME = 13000; // 13s budget — direct fetch (4.5s) + proxy rotation (up to 9s)
+
+  const getRemainingTimeout = (extraBuffer = 1000): number => {
+    const elapsed = Date.now() - requestStart;
+    return Math.max(2000, MAX_REQUEST_TIME - elapsed - extraBuffer);
+  };
 
   try {
     const body = await request.json();
@@ -687,7 +818,7 @@ export async function POST(request: NextRequest) {
     } catch (err) {
       console.warn(`[Proxy] Failed to fetch TMDB details for title filtering: ${err}`);
     }
-
+    let isNetworkProblem = false;
     try {
       // 1. Get client token
       let token = cachedToken;
@@ -705,7 +836,10 @@ export async function POST(request: NextRequest) {
           },
           body: JSON.stringify({}),
           cache: "no-store",
-          signal: AbortSignal.timeout(5000),
+          // Fixed independent signal — NOT budget-derived.
+          // Worst-case: direct(4.5s) + proxy-list(1.5s) + proxy-rotation(9s) = 15s.
+          // After directFetchBlocked is set, becomes ~10.5s in practice.
+          signal: AbortSignal.timeout(15000),
         });
 
         if (!tokenResponse.ok) throw new Error(`Token fetch failed (HTTP ${tokenResponse.status})`);
@@ -732,10 +866,15 @@ export async function POST(request: NextRequest) {
       qualities = [];
 
       let audioVersionsPromise: Promise<any> | null = null;
+      let audioVersionsStartTime = 0;
       if (!isDubRequest) {
         const tvAudioParams = contentType === "tv" ? `&season=${season}&episode=${episode}` : "";
         const audioVersionsUrl = `https://boredflix.cc/${serverNum}/aoneroom/audio-versions?tmdb_id=${id}&type=${contentType}${tvAudioParams}&_=${Date.now()}`;
         logDebug(`[Parallel Audio] Starting parallel fetch for: ${audioVersionsUrl}`);
+        // 12s signal: after directFetchBlocked is set, proxy-rotation gets the full
+        // 9s overallTimeout window. Without directFetchBlocked the 4.5s direct fetch
+        // + 1.5s proxy-list eats 6s, leaving only 6s for rotation — so 12s is the minimum.
+        audioVersionsStartTime = Date.now();
         audioVersionsPromise = fetchBoredflixWithFallback(audioVersionsUrl, {
           headers: {
             "X-Bf-Client-Token": token,
@@ -744,7 +883,7 @@ export async function POST(request: NextRequest) {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
           },
           cache: "no-store",
-          signal: AbortSignal.timeout(4000)
+          signal: AbortSignal.timeout(12000)
         })
           .then((res) => {
             if (res.ok) return res.json();
@@ -772,7 +911,7 @@ export async function POST(request: NextRequest) {
               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             },
             cache: "no-store",
-            signal: AbortSignal.timeout(8000)
+            signal: AbortSignal.timeout(Math.min(5000, getRemainingTimeout(1000)))
           });
           if (versionRes.ok) {
             const versionData = await versionRes.json();
@@ -788,6 +927,11 @@ export async function POST(request: NextRequest) {
             logDebug(`[Dub] Version OK but no URL in response for ${dpath}`);
           } else {
             logDebug(`[Dub] Version HTTP ${versionRes.status} for ${dpath}`);
+            if (versionRes.status === 401 || versionRes.status === 403) {
+              logDebug(`[Token] Version fetch returned status ${versionRes.status}. Clearing cached token.`);
+              cachedToken = null;
+              cachedTokenTime = 0;
+            }
           }
         } catch (e: any) {
           logDebug(`[Dub] Version fetch error: ${e?.message}`);
@@ -813,7 +957,7 @@ export async function POST(request: NextRequest) {
                   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 },
                 cache: "no-store",
-                signal: AbortSignal.timeout(5000)
+                signal: AbortSignal.timeout(Math.min(4000, getRemainingTimeout(1000)))
               }
             );
             if (freshAvRes.ok) {
@@ -860,7 +1004,9 @@ export async function POST(request: NextRequest) {
               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             },
             cache: "no-store",
-            signal: AbortSignal.timeout(3000)
+            // 4.5s direct + 1.5s proxy-list + 9s proxy-rotation = 15s worst-case.
+            // After first failure, directFetchBlocked cuts direct to 0s, making ~10.5s sufficient.
+            signal: AbortSignal.timeout(15000)
           });
         } catch (cacheErr: any) {
           logDebug(`[Cache] GET cache failed or timed out: ${cacheErr?.message || cacheErr}`);
@@ -911,7 +1057,9 @@ export async function POST(request: NextRequest) {
             },
             body: JSON.stringify({ tmdb_id: id.toString(), content_type: contentType, server, ...tvScrapeParams }),
             cache: "no-store",
-            signal: AbortSignal.timeout(8000),
+            // 4.5s direct + 1.5s proxy-list + 9s proxy-rotation = 15s worst-case.
+            // After first failure, directFetchBlocked shortens this to ~10.5s.
+            signal: AbortSignal.timeout(15000)
           });
 
           if (scrapeResponse.ok) {
@@ -927,6 +1075,10 @@ export async function POST(request: NextRequest) {
                 }
               }
             }
+          } else if (scrapeResponse.status === 401 || scrapeResponse.status === 403) {
+            logDebug(`[Token] Scraping returned status ${scrapeResponse.status}. Clearing cached token.`);
+            cachedToken = null;
+            cachedTokenTime = 0;
           }
         }
       }
@@ -987,7 +1139,7 @@ export async function POST(request: NextRequest) {
                   },
                   body: JSON.stringify({ tmdb_id: id.toString(), content_type: contentType, server, ...tvScrapeParams2 }),
                   cache: "no-store",
-                  signal: AbortSignal.timeout(6000),
+                  signal: AbortSignal.timeout(15000) // Independent fixed timeout
                 });
                 if (scrapeRes2.ok) {
                   const resJson2 = await scrapeRes2.json();
@@ -1018,10 +1170,7 @@ export async function POST(request: NextRequest) {
         }
 
         if (rawUrl) {
-          const isHls = rawUrl.toLowerCase().includes(".m3u8") || rawUrl.includes("/pl/") || rawUrl.includes("/streamsvr/");
-          const proxyEndpoint = isHls
-            ? "https://boredflix-mp4-proxy.abdouphphtml.workers.dev/m3u8-proxy"
-            : "https://boredflix-mp4-proxy.abdouphphtml.workers.dev/mp4-proxy";
+          const proxyEndpoint = `${baseUrl}/api/proxy`;
 
           const cleanedHeaders = cleanPlaybackHeaders(playbackHeaders) || {
             "origin": "https://netfilm.world",
@@ -1037,10 +1186,7 @@ export async function POST(request: NextRequest) {
 
         if (qInfo.qualities?.length > 0) {
           qualities = qInfo.qualities.map((q: any) => {
-            const qIsHls = q.url.toLowerCase().includes(".m3u8") || q.url.includes("/pl/") || q.url.includes("/streamsvr/");
-            const qProxyEndpoint = qIsHls
-              ? "https://boredflix-mp4-proxy.abdouphphtml.workers.dev/m3u8-proxy"
-              : "https://boredflix-mp4-proxy.abdouphphtml.workers.dev/mp4-proxy";
+            const qProxyEndpoint = `${baseUrl}/api/proxy`;
 
             const qCleanedHeaders = cleanPlaybackHeaders(q.playback_headers || playbackHeaders) || {
               "origin": "https://netfilm.world",
@@ -1072,11 +1218,22 @@ export async function POST(request: NextRequest) {
 
         if (audioVersionsPromise) {
           try {
-            freshDubData = await audioVersionsPromise;
+            // Deadline-based race: cap at 13s from when audio-versions started.
+            // Must exceed the 12s AbortSignal on the fetch so the signal fires first
+            // (not the deadline), giving audio-versions the best chance to succeed.
+            const elapsed = Date.now() - audioVersionsStartTime;
+            const remainingForAudio = Math.max(0, 13000 - elapsed);
+            const audioTimeoutPromise = new Promise<null>((resolve) =>
+              setTimeout(() => resolve(null), remainingForAudio)
+            );
+            freshDubData = await Promise.race([audioVersionsPromise, audioTimeoutPromise]);
             if (freshDubData?.audio_versions?.length > 0) {
               audioVersions = freshDubData.audio_versions;
             } else if (Array.isArray(freshDubData) && freshDubData.length > 0) {
               audioVersions = freshDubData;
+            }
+            if (!freshDubData) {
+              logDebug(`[Fresh-Parallel] audio-versions timed out at await-point (${elapsed}ms elapsed, ${remainingForAudio}ms budget given)`);
             }
           } catch (audioErr) {
             logDebug(`[Fresh-Parallel] Dedicated audio-versions parallel resolution failed: ${audioErr}`);
@@ -1094,8 +1251,8 @@ export async function POST(request: NextRequest) {
         // Prepend primary/root track if not already in the list
         const primaryTrack = extractRootAudioVersion(freshDubData || activeStream);
         if (primaryTrack) {
-          const exists = audioVersions.some((av: any) => 
-            (av.subject_id && av.subject_id.toString() === primaryTrack.subject_id) || 
+          const exists = audioVersions.some((av: any) =>
+            (av.subject_id && av.subject_id.toString() === primaryTrack.subject_id) ||
             (av.id && av.id.toString() === primaryTrack.subject_id)
           );
           if (!exists) {
@@ -1106,13 +1263,24 @@ export async function POST(request: NextRequest) {
       }
     } catch (scrapeError: any) {
       logDebug(`[Scrape] BoredFlix scrape/cache failed: ${scrapeError?.message}`);
+      const msg = scrapeError?.message || "";
+      if (msg.includes("ENOTFOUND") || msg.includes("ENETUNREACH") || msg.includes("EHOSTUNREACH") || msg.includes("fetch failed") || msg.includes("timed out")) {
+        isNetworkProblem = true;
+      }
     }
 
     if (!streamUrl) {
+      let finalErrorMsg = "No stream available for this title right now. Please try again or switch to Server 2.";
+      if (isNetworkProblem) {
+         finalErrorMsg = "Your internet connection seems slow or disconnected. Please check your network and try again.";
+      } else if (isDubRequest) {
+         finalErrorMsg = "This dub is currently unavailable. Please select another language.";
+      }
+
       if (isDubRequest) {
         return NextResponse.json(
           {
-            error: "This dub is currently unavailable. Please select another language.",
+            error: finalErrorMsg,
             dubFailed: true,
             audioVersions,
           },
@@ -1120,7 +1288,7 @@ export async function POST(request: NextRequest) {
         );
       }
       return NextResponse.json(
-        { error: "No stream available for this title right now. Please try again or switch to Server 2." },
+        { error: finalErrorMsg },
         { status: 503 }
       );
     }

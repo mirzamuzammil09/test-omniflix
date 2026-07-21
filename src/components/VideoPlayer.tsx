@@ -14,7 +14,11 @@ import {
   Maximize, 
   Minimize,
   ChevronDown,
-  Check
+  Check,
+  Download,
+  Copy,
+  X,
+  FileText
 } from 'lucide-react';
 import { tmdb } from '@/services/tmdb';
 
@@ -31,17 +35,16 @@ const LANGUAGE_NAMES: Record<string, string> = {
   ja: 'Japanese', ar: 'Arabic', tr: 'Turkish', ko: 'Korean', ta: 'Tamil', te: 'Telugu',
 };
 
-type ActiveServer = 'server1' | 'server2';
-
 export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: VideoPlayerProps) {
   const devToolsDetected = false;
   const [isLoading, setIsLoading] = useState(true);
   const [isPaused, setIsPaused] = useState(true);
-  const [activeServer, setActiveServer] = useState<ActiveServer>('server1');
-  const [languages, setLanguages] = useState<string[]>(['en']);
-  const [dubLang, setDubLang] = useState<string>('en');
-  const [startAtTime, setStartAtTime] = useState<number>(0);
   const [title, setTitle] = useState<string>('');
+
+  // Download Modal States
+  const [isDownloadModalOpen, setIsDownloadModalOpen] = useState(false);
+  const [selectedQualityUrl, setSelectedQualityUrl] = useState<string>('');
+  const [copied, setCopied] = useState(false);
 
   // Episode list for TV shows navigation
   const [episodesList, setEpisodesList] = useState<any[]>([]);
@@ -55,6 +58,7 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
   const [s1Qualities, setS1Qualities] = useState<{ label: string; url: string }[]>([]);
   const [s1SelectedQuality, setS1SelectedQuality] = useState<string>('Auto');
   const [s1Error, setS1Error] = useState<string | null>(null);
+  const [dubError, setDubError] = useState<string | null>(null);
   const [s1Fetching, setS1Fetching] = useState(false);
 
   // Custom Controls States
@@ -89,6 +93,7 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
   const lastSavedProgressRef = useRef<number>(0);
   const progressLoadedRef = useRef<boolean>(false);
   const lastMousePosRef = useRef({ x: 0, y: 0 });
+
 
   // localStorage progress keys
   const getProgressKey = useCallback(() => {
@@ -458,7 +463,6 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
 
   // Keyboard Shortcuts
   const handleKeyDown = useCallback((e: KeyboardEvent | React.KeyboardEvent) => {
-    if (activeServer !== 'server1') return;
 
     if ((e as any)._alreadyHandled) return;
     (e as any)._alreadyHandled = true;
@@ -529,43 +533,30 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
       default:
         break;
     }
-  }, [activeServer, s1Subtitles, s1SelectedSub, toggleFullscreen]);
+  }, [s1Subtitles, s1SelectedSub, toggleFullscreen]);
 
   useEffect(() => {
-    if (activeServer !== 'server1') return;
     const globalKeyHandler = (e: KeyboardEvent) => handleKeyDown(e);
     window.addEventListener('keydown', globalKeyHandler);
     return () => window.removeEventListener('keydown', globalKeyHandler);
-  }, [handleKeyDown, activeServer]);
+  }, [handleKeyDown]);
 
-  // Load preferred server
+  // Sync selected download quality URL
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('iframe_preferred_server');
-      if (saved === 'server2') setActiveServer('server2');
+    if (s1Qualities.length > 0) {
+      const activeQ = s1Qualities.find(q => q.label === s1SelectedQuality) || s1Qualities[0];
+      setSelectedQualityUrl(activeQ.url);
+    } else if (s1StreamUrl) {
+      setSelectedQualityUrl(s1StreamUrl);
     }
-  }, []);
+  }, [s1Qualities, s1SelectedQuality, s1StreamUrl]);
 
-  // Fetch translations for Server 2 (Peachify) dub
-  useEffect(() => {
-    if (!tmdbId || activeServer !== 'server2') return;
-    let isMounted = true;
-    tmdb.getTranslations(type, tmdbId)
-      .then((res) => {
-        if (!isMounted) return;
-        const fetchedLangs = (res.translations || [])
-          .map((t) => t.iso_639_1)
-          .filter((iso): iso is string => iso in LANGUAGE_NAMES);
-        setLanguages(Array.from(new Set(['en', ...fetchedLangs])));
-      })
-      .catch(() => setLanguages(['en', 'hi', 'es', 'fr', 'de']));
-    return () => { isMounted = false; };
-  }, [tmdbId, type, activeServer]);
+
 
   // Server 1 Fetch Scraper
-  const fetchS1Stream = useCallback(async (subjectId?: string, detailPath?: string, forceRefresh?: boolean) => {
+  const fetchS1Stream = useCallback(async (subjectId?: string, detailPath?: string, forceRefresh?: boolean, retryCount: number = 0) => {
     if (devToolsDetected) return;
-    const fetchKey = `${tmdbId}_${season}_${episode}_${subjectId || 'none'}_${forceRefresh || 'false'}`;
+    const fetchKey = `${tmdbId}_${season}_${episode}_${subjectId || 'none'}_${forceRefresh || 'false'}_${retryCount}`;
     if (s1ActiveFetchRef.current === fetchKey) return;
     s1ActiveFetchRef.current = fetchKey;
 
@@ -574,8 +565,13 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
 
     if (!subjectId) {
       setS1StreamUrl(null);
-      setS1AudioVersions([]);
-      setS1Subtitles([]);
+      // Preserve existing audio versions and subtitles if they are already loaded to avoid UI flickering
+      if (s1AudioVersions.length === 0) {
+        setS1AudioVersions([]);
+      }
+      if (s1Subtitles.length === 0) {
+        setS1Subtitles([]);
+      }
       setS1SelectedAudio('none');
       setS1SelectedSub('none');
     } else {
@@ -619,7 +615,28 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
       if (data.streamUrl) {
         setS1StreamUrl(data.streamUrl);
         if (data.subtitles?.length > 0) setS1Subtitles(data.subtitles);
-        if (data.audioVersions?.length > 0) setS1AudioVersions(data.audioVersions);
+        if (data.audioVersions?.length > 0) {
+          setS1AudioVersions(data.audioVersions);
+          if (!subjectId && typeof window !== 'undefined') {
+            const prefLang = localStorage.getItem('preferredDubLanguage');
+            if (prefLang) {
+              const match = data.audioVersions.find((t: any) => 
+                (t.language?.toLowerCase() === prefLang || t.label?.toLowerCase().includes(prefLang)) &&
+                t.language?.toLowerCase() !== "original"
+              );
+              if (match) {
+                 const sid = match.subject_id || match.id;
+                 const dpath = match.detail_path || match.path || '';
+                 if (sid && sid !== data.audioVersions[0]?.subject_id) {
+                     setTimeout(() => {
+                         setS1SelectedAudio(sid);
+                         fetchS1Stream(sid, dpath);
+                     }, 50);
+                 }
+              }
+            }
+          }
+        }
         if (subjectId) setS1SelectedAudio(subjectId);
 
         if (data.qualities?.length > 0) {
@@ -644,14 +661,28 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
 
     if (!success) {
       const errorMsg = lastError?.message || 'Stream fetch failed';
-      setS1StreamUrl(null);
-      setS1Error(errorMsg);
-      setIsLoading(false);
-      if (subjectId) setS1SelectedAudio('none');
+      if (subjectId) {
+        if (retryCount < 2) {
+           setDubError(`Loading failed... Retrying (${retryCount + 1}/2)`);
+           setTimeout(() => {
+               fetchS1Stream(subjectId, detailPath, true, retryCount + 1);
+           }, 1500);
+        } else {
+           setS1SelectedAudio('none');
+           setDubError(errorMsg || 'This dub language is currently unavailable. Playing original audio instead.');
+           setTimeout(() => setDubError(null), 5000);
+           fetchS1Stream(undefined, undefined, false, 0);
+        }
+      } else {
+        setS1StreamUrl(null);
+        setS1Error('ویڈیو لوڈ نہیں ہو سکی۔ براہ کرم دوبارہ کوشش کریں یا اپنا نیٹ ورک چیک کریں۔');
+        setIsLoading(false);
+      }
     }
     setS1Fetching(false);
     s1ActiveFetchRef.current = null;
   }, [tmdbId, type, season, episode]);
+
 
   // Reset Server 1 state synchronously on content change during render phase
   const [lastId, setLastId] = useState<string | number>(tmdbId);
@@ -677,15 +708,16 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
     setCurrentTimeState(0);
     setDuration(0);
     setBufferedTime(0);
+    setIsDownloadModalOpen(false);
+    setSelectedQualityUrl('');
+    setCopied(false);
   }
 
-  // Trigger load on Server 1
+  // Trigger load on mount / content change
   useEffect(() => {
     if (devToolsDetected) return;
-    if (activeServer === 'server1') {
-      fetchS1Stream();
-    }
-  }, [activeServer, tmdbId, season, episode, fetchS1Stream, devToolsDetected]);
+    fetchS1Stream();
+  }, [tmdbId, season, episode, fetchS1Stream, devToolsDetected]);
 
   const handleAudioChange = (subjectId: string) => {
     if (videoRef.current) {
@@ -699,6 +731,9 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
     } else {
       const track = s1AudioVersions.find((t) => t.subject_id === subjectId || t.id === subjectId);
       if (track) {
+        if (typeof window !== 'undefined' && track.language && track.language.toLowerCase() !== "original") {
+          localStorage.setItem('preferredDubLanguage', track.language.toLowerCase());
+        }
         const sid = track.subject_id || track.id;
         const dpath = track.detail_path || track.path || '';
         fetchS1Stream(sid, dpath);
@@ -748,6 +783,50 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
       return episodesList.some(ep => ep.episode_number === episode + 1) || season < 100;
     }
     return true;
+  };
+
+  const getDownloadFilename = useCallback(() => {
+    const cleanTitle = (title || 'Video').replace(/[^a-zA-Z0-9\s.-]/g, '').trim();
+    if (type === 'tv') {
+      const sStr = String(season).padStart(2, '0');
+      const eStr = String(episode).padStart(2, '0');
+      return `${cleanTitle} - S${sStr}E${eStr}.mp4`;
+    }
+    return `${cleanTitle}.mp4`;
+  }, [title, type, season, episode]);
+
+  const handleDownload = (url: string) => {
+    if (!url) return;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = getDownloadFilename();
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const handleCopyLink = () => {
+    const url = selectedQualityUrl || s1StreamUrl || '';
+    if (!url) return;
+    navigator.clipboard.writeText(url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDownloadSubtitle = (subUrl: string, subLabel: string) => {
+    const cleanTitle = (title || 'Video').replace(/[^a-zA-Z0-9\s.-]/g, '').trim();
+    const filename = `${cleanTitle}.${subLabel.toLowerCase()}.vtt`;
+    const fullUrl = `/api/subtitles?url=${encodeURIComponent(subUrl)}`;
+    const a = document.createElement('a');
+    a.href = fullUrl;
+    a.download = filename;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   // Time & Scrubbing management
@@ -908,6 +987,7 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
     videoRef.current = node;
   }, []);
 
+
   if (devToolsDetected) {
     return <div className="absolute inset-0 bg-black z-50" />;
   }
@@ -921,17 +1001,32 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
     >
       {/* ─── Premium Glass Floating Top Controls Bar ─── */}
       <div
-        className={`absolute top-2 left-2 right-2 sm:top-4 sm:left-4 sm:right-4 z-30 flex items-center justify-between p-2 sm:p-3 rounded-2xl glass-panel border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.6)] transition-all duration-300 ${userActive || isPaused ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4 pointer-events-none'
-          }`}
+        className={`absolute top-2 left-2 right-2 sm:top-4 sm:left-4 sm:right-4 z-30 flex items-center justify-between p-2 sm:p-3 rounded-2xl glass-panel border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.6)] transition-all duration-300 ${
+          userActive || isPaused ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4 pointer-events-none'
+        }`}
         onMouseEnter={() => {
           if (activeTimeoutRef.current) clearTimeout(activeTimeoutRef.current);
         }}
         onMouseLeave={handleMouseMove}
       >
         <div className="flex items-center gap-2 sm:gap-3">
-          <span className="text-[10px] sm:text-xs font-bold text-white truncate max-w-[280px] sm:max-w-[600px]">
+          <span className="text-[10px] sm:text-xs font-bold text-white truncate max-w-[160px] sm:max-w-[400px]">
             {title || 'Loading title...'}
           </span>
+        </div>
+        <div className="flex items-center gap-2">
+          {s1StreamUrl && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsDownloadModalOpen(true);
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 hover:bg-red-700 active:scale-95 text-white text-[10px] font-black tracking-wider uppercase rounded-xl transition-all shadow-[0_0_12px_rgba(220,38,38,0.25)] cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Download</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -952,7 +1047,13 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
               </p>
               <div className="flex gap-2.5 w-full justify-center">
                 <button
-                  onClick={() => { fetchS1Stream(); }}
+                  onClick={() => {
+                    fetchS1Stream(
+                      s1SelectedAudio !== 'none' ? s1SelectedAudio : undefined,
+                      s1AudioVersions.find((t: any) => t.subject_id === s1SelectedAudio || t.id === s1SelectedAudio)?.detail_path,
+                      true
+                    );
+                  }}
                   className="px-4 py-2 bg-red-600 hover:bg-red-700 active:scale-95 text-white text-[10px] font-black tracking-wider uppercase rounded-xl transition-all shadow-[0_0_12px_rgba(220,38,38,0.25)]"
                 >
                   Retry Loading
@@ -967,6 +1068,13 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
               </span>
             </>
           )}
+        </div>
+      )}
+
+      {/* ─── Dub Error Notification ─── */}
+      {dubError && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 bg-red-600/90 backdrop-blur text-white text-xs sm:text-sm px-4 py-2 rounded-full shadow-lg border border-red-500/50 animate-in fade-in slide-in-from-top-4">
+          {dubError}
         </div>
       )}
 
@@ -1057,7 +1165,8 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
                   );
                 }, 1500);
               } else {
-                setS1Error('Stream failed to load after multiple retries. Please try switching to Server 2.');
+                setS1Error('ویڈیو بار بار fail ہو رہی ہے۔ براہ کرم دوبارہ کوشش کریں۔');
+                setIsLoading(false);
               }
             }}
           >
@@ -1082,50 +1191,55 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
         </div>
       )}
 
-      {/* ─── Center Play/Pause Button Overlay (Mobile Friendly) ─── */}
-      <div 
-        className={`absolute inset-0 pointer-events-none z-20 flex items-center justify-center transition-opacity duration-300 ${userActive || isPaused ? 'opacity-100' : 'opacity-0'}`}
-      >
-        <button
-          onClick={togglePlayPause}
-          className={`pointer-events-auto p-4 rounded-full glass-panel border border-white/15 text-white hover:text-red-500 hover:scale-110 active:scale-95 transition-all duration-300 shadow-[0_8px_32px_rgba(0,0,0,0.5)] cursor-pointer ${
-            isLoading || (s1Fetching && !s1StreamUrl) ? 'scale-75 opacity-0 pointer-events-none' : 'scale-100 opacity-100'
-          }`}
-          aria-label={isPaused ? "Play" : "Pause"}
+
+      {/* ─── Center Play/Pause Button Overlay ─── */}
+      {s1StreamUrl && !s1Error && (
+        <div 
+          className={`absolute inset-0 pointer-events-none z-20 flex items-center justify-center transition-opacity duration-300 ${userActive || isPaused ? 'opacity-100' : 'opacity-0'}`}
         >
-          {isPaused ? <Play className="w-8 h-8 fill-current translate-x-0.5" /> : <Pause className="w-8 h-8 fill-current" />}
-        </button>
-      </div>
+          <button
+            onClick={togglePlayPause}
+            className={`pointer-events-auto p-4 rounded-full glass-panel border border-white/15 text-white hover:text-red-500 hover:scale-110 active:scale-95 transition-all duration-300 shadow-[0_8px_32px_rgba(0,0,0,0.5)] cursor-pointer ${
+              isLoading || (s1Fetching && !s1StreamUrl) ? 'scale-75 opacity-0 pointer-events-none' : 'scale-100 opacity-100'
+            }`}
+            aria-label={isPaused ? "Play" : "Pause"}
+          >
+            {isPaused ? <Play className="w-8 h-8 fill-current translate-x-0.5" /> : <Pause className="w-8 h-8 fill-current" />}
+          </button>
+        </div>
+      )}
 
       {/* ─── Double Tap / Play Pause Center Overlays ─── */}
-      <div className="absolute inset-0 pointer-events-none z-20 flex items-center justify-center">
-        {/* Left Seek Feedback */}
-        {doubleTapFeedback === 'left' && (
-          <div className="absolute left-1/4 flex flex-col items-center justify-center bg-black/60 rounded-full w-20 h-20 animate-double-tap border border-white/10">
-            <ArrowLeft className="w-8 h-8 text-white mb-1 animate-pulse" />
-            <span className="text-[10px] font-black text-white">-10s</span>
-          </div>
-        )}
+      {s1StreamUrl && !s1Error && (
+        <div className="absolute inset-0 pointer-events-none z-20 flex items-center justify-center">
+          {/* Left Seek Feedback */}
+          {doubleTapFeedback === 'left' && (
+            <div className="absolute left-1/4 flex flex-col items-center justify-center bg-black/60 rounded-full w-20 h-20 animate-double-tap border border-white/10">
+              <ArrowLeft className="w-8 h-8 text-white mb-1 animate-pulse" />
+              <span className="text-[10px] font-black text-white">-10s</span>
+            </div>
+          )}
 
-        {/* Right Seek Feedback */}
-        {doubleTapFeedback === 'right' && (
-          <div className="absolute right-1/4 flex flex-col items-center justify-center bg-black/60 rounded-full w-20 h-20 animate-double-tap border border-white/10">
-            <ArrowRight className="w-8 h-8 text-white mb-1 animate-pulse" />
-            <span className="text-[10px] font-black text-white">+10s</span>
-          </div>
-        )}
+          {/* Right Seek Feedback */}
+          {doubleTapFeedback === 'right' && (
+            <div className="absolute right-1/4 flex flex-col items-center justify-center bg-black/60 rounded-full w-20 h-20 animate-double-tap border border-white/10">
+              <ArrowRight className="w-8 h-8 text-white mb-1 animate-pulse" />
+              <span className="text-[10px] font-black text-white">+10s</span>
+            </div>
+          )}
 
-        {/* Center Play/Pause Transition Indicator */}
-        {centerIconState && (
-          <div className="flex items-center justify-center bg-black/50 backdrop-blur-sm rounded-full w-20 h-20 border border-white/10 scale-100 opacity-100 transition-all duration-300 animate-ping-once">
-            {centerIconState === 'play' ? (
-              <Play className="w-10 h-10 text-white fill-current" />
-            ) : (
-              <Pause className="w-10 h-10 text-white fill-current" />
-            )}
-          </div>
-        )}
-      </div>
+          {/* Center Play/Pause Transition Indicator */}
+          {centerIconState && (
+            <div className="flex items-center justify-center bg-black/50 backdrop-blur-sm rounded-full w-20 h-20 border border-white/10 scale-100 opacity-100 transition-all duration-300 animate-ping-once">
+              {centerIconState === 'play' ? (
+                <Play className="w-10 h-10 text-white fill-current" />
+              ) : (
+                <Pause className="w-10 h-10 text-white fill-current" />
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ─── Custom Premium Glass Bottom Controls Bar ─── */}
       {s1StreamUrl && !s1Error && (
@@ -1436,6 +1550,114 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
               >
                 {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Premium Glass Download Modal ─── */}
+      {isDownloadModalOpen && (
+        <div 
+          className="absolute inset-0 bg-neutral-950/85 backdrop-blur-md z-50 flex items-center justify-center p-4"
+          onClick={() => setIsDownloadModalOpen(false)}
+        >
+          <div 
+            className="w-full max-w-md glass-panel border border-white/10 rounded-3xl p-5 sm:p-6 flex flex-col gap-4 shadow-[0_20px_50px_rgba(0,0,0,0.8)] relative max-h-[85vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Close Button */}
+            <button
+              onClick={() => setIsDownloadModalOpen(false)}
+              className="absolute top-4 right-4 p-1.5 text-neutral-400 hover:text-white rounded-xl hover:bg-white/5 transition-all cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            {/* Modal Header */}
+            <div className="flex items-center gap-3 border-b border-white/5 pb-4">
+              <div className="p-2.5 bg-red-950/40 border border-red-500/20 rounded-2xl text-red-500">
+                <Download className="w-6 h-6 drop-shadow-[0_0_8px_rgba(239,68,68,0.4)]" />
+              </div>
+              <div className="flex flex-col min-w-0">
+                <h3 className="text-xs font-black uppercase tracking-wider text-red-500">Download Media</h3>
+                <span className="text-sm font-bold text-white truncate max-w-[280px]">
+                  {title || 'Loading title...'}
+                </span>
+              </div>
+            </div>
+
+            {/* Filename Preview Card */}
+            <div className="bg-neutral-900/40 border border-white/5 p-3 rounded-2xl flex items-start gap-3">
+              <div className="p-2 bg-neutral-950/80 border border-white/10 rounded-xl text-neutral-400 mt-0.5">
+                <FileText className="w-4 h-4" />
+              </div>
+              <div className="flex flex-col min-w-0">
+                <span className="text-[9px] font-extrabold text-neutral-500 uppercase tracking-widest">Target Filename</span>
+                <span className="text-[11px] font-semibold text-neutral-300 break-all leading-normal">
+                  {getDownloadFilename()}
+                </span>
+              </div>
+            </div>
+
+            {/* Quality Picker */}
+            {s1Qualities.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <span className="text-[9px] font-extrabold text-neutral-500 uppercase tracking-widest">Select Video Quality</span>
+                <div className="grid grid-cols-2 gap-2">
+                  {s1Qualities.map((q) => {
+                    const isSelected = selectedQualityUrl === q.url;
+                    return (
+                      <button
+                        key={q.label}
+                        onClick={() => setSelectedQualityUrl(q.url)}
+                        className={`px-3 py-2 text-[10px] font-black uppercase tracking-wider rounded-xl border transition-all flex items-center justify-between cursor-pointer ${
+                          isSelected
+                            ? 'bg-red-600/10 border-red-500 text-red-400 shadow-[0_0_12px_rgba(239,68,68,0.15)]'
+                            : 'bg-neutral-950/40 border-white/5 text-neutral-400 hover:text-white hover:border-white/10'
+                        }`}
+                      >
+                        <span>{q.label}</span>
+                        {isSelected && <Check className="w-3.5 h-3.5" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Primary Action Buttons */}
+            <div className="flex flex-col gap-2.5 mt-2">
+              <button
+                onClick={() => handleDownload(selectedQualityUrl || s1StreamUrl || '')}
+                className="w-full py-3 bg-red-600 hover:bg-red-700 active:scale-98 text-white text-[11px] font-black tracking-widest uppercase rounded-2xl transition-all shadow-[0_0_20px_rgba(220,38,38,0.3)] flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Download className="w-4 h-4" />
+                Start Download
+              </button>
+            </div>
+
+            {/* Subtitles Download Section */}
+            {s1Subtitles.length > 0 && (
+              <div className="flex flex-col gap-2 mt-2 pt-4 border-t border-white/5">
+                <span className="text-[9px] font-extrabold text-neutral-500 uppercase tracking-widest">Download Subtitles (.VTT)</span>
+                <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto p-1 scroll-container">
+                  {s1Subtitles.map((sub) => (
+                    <button
+                      key={sub.id}
+                      onClick={() => handleDownloadSubtitle(sub.url, sub.label)}
+                      className="px-2.5 py-1.5 bg-neutral-900/60 hover:bg-neutral-800 border border-white/5 rounded-xl text-[9px] font-bold text-neutral-300 hover:text-white transition-all flex items-center gap-1 cursor-pointer"
+                    >
+                      <Subtitles className="w-3.5 h-3.5 text-neutral-400" />
+                      <span>{sub.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Tip section */}
+            <div className="text-[9px] text-neutral-500 leading-relaxed text-center mt-2">
+              Tip: If the video starts playing in a new tab, right-click and choose <span className="text-neutral-400 font-semibold">"Save Video As"</span>, or tap the three dots menu and select <span className="text-neutral-400 font-semibold">"Download"</span>.
             </div>
           </div>
         </div>
