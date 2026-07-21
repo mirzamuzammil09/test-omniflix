@@ -4,6 +4,9 @@ import https from "https";
 import http from "http";
 import tls from "tls";
 
+export const maxDuration = 60;
+
+
 const logDebug = (msg: string) => {
   console.log(`[Playback-Debug] ${msg}`);
 };
@@ -148,7 +151,7 @@ async function getFreeProxies(): Promise<string[]> {
   const fetchProxyscrape = async () => {
     try {
       const res = await fetch("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=yes&anonymity=all", {
-        signal: AbortSignal.timeout(5000)
+        signal: AbortSignal.timeout(2500)
       });
       if (!res.ok) throw new Error("Proxyscrape error " + res.status);
       const text = await res.text();
@@ -164,7 +167,7 @@ async function getFreeProxies(): Promise<string[]> {
   const fetchMonosans = async () => {
     try {
       const res = await fetch("https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt", {
-        signal: AbortSignal.timeout(5000)
+        signal: AbortSignal.timeout(2500)
       });
       if (!res.ok) throw new Error("Monosans error " + res.status);
       const text = await res.text();
@@ -180,7 +183,7 @@ async function getFreeProxies(): Promise<string[]> {
   const fetchTheSpeedX = async () => {
     try {
       const res = await fetch("https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt", {
-        signal: AbortSignal.timeout(5000)
+        signal: AbortSignal.timeout(2500)
       });
       if (!res.ok) throw new Error("TheSpeedX error " + res.status);
       const text = await res.text();
@@ -196,7 +199,7 @@ async function getFreeProxies(): Promise<string[]> {
   const fetchPrxchk = async () => {
     try {
       const res = await fetch("https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt", {
-        signal: AbortSignal.timeout(5000)
+        signal: AbortSignal.timeout(2500)
       });
       if (!res.ok) throw new Error("Prxchk error " + res.status);
       const text = await res.text();
@@ -610,8 +613,8 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
   }
 
   const shuffled = [...proxies].sort(() => 0.5 - Math.random());
-  // Test fewer proxies in parallel on serverless to avoid saturating resources
-  const maxParallel = isServerless ? 15 : 30;
+  // Test proxies in parallel (max 30)
+  const maxParallel = 30;
   const testProxies = shuffled.slice(0, maxParallel);
 
   // Prepend recent working proxies to test in parallel at the front of the list.
@@ -654,9 +657,9 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
       }
     };
 
-    // Safety timeout to ensure we return before execution limit (Netlify 10s limit)
-    // For serverless, we must cap this tightly to ~4.5s so 2 sequential fetches take 9s max.
-    const timeoutDuration = isServerless ? 4500 : 12000;
+    // Safety timeout to ensure we return before execution limit (Netlify 10s limit without maxDuration)
+    // Since we added maxDuration = 60, we can safely allow up to 8s for proxy rotation on serverless.
+    const timeoutDuration = isServerless ? 8000 : 12000;
     const overallTimeout = setTimeout(() => {
       if (!resolved) {
         resolved = true;
@@ -790,11 +793,11 @@ export async function POST(request: NextRequest) {
   }
 
   const requestStart = Date.now();
-  const MAX_REQUEST_TIME = 13000; // 13s budget — direct fetch (4.5s) + proxy rotation (up to 9s)
+  const MAX_REQUEST_TIME = 45000; // 45s budget with maxDuration 60s
 
   const getRemainingTimeout = (extraBuffer = 1000): number => {
     const elapsed = Date.now() - requestStart;
-    return Math.max(2000, MAX_REQUEST_TIME - elapsed - extraBuffer);
+    return Math.max(4000, MAX_REQUEST_TIME - elapsed - extraBuffer);
   };
 
   try {
