@@ -584,7 +584,7 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
   const now = Date.now();
   const isDirectBlocked = directFetchBlocked && now < directFetchBlockedUntil;
   if (!isDirectBlocked) {
-    const directTimeout = 4500;
+    const directTimeout = 10000; // 10s budget for POST /scrape to contact upstream provider
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), directTimeout);
