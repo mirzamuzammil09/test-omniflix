@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 const DEFAULT_EXTERNAL_PROXY_URL = "https://omniflix.mgemers07.workers.dev";
 
 export async function GET(request: NextRequest) {
@@ -33,14 +34,27 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const fetchRes = await fetch(targetUrl, {
-      method: 'GET',
-      headers,
-      signal: request.signal,
-    });
+    let fetchRes: Response | null = null;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      fetchRes = await fetch(targetUrl, {
+        method: 'GET',
+        headers,
+        signal: request.signal,
+      });
+
+      const shouldRetry = fetchRes.status === 429 || fetchRes.status === 403 || fetchRes.status === 502;
+      if (!shouldRetry || attempt === 2) {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 750 * attempt));
+    }
+
+    if (!fetchRes) {
+      return new NextResponse('Proxy request failed', { status: 502 });
+    }
 
     // If upstream is rate-limiting or blocking (429/403/502), allow a custom proxy only when configured.
-    // Do not use the public worker proxy by default.
     const externalProxyUrl = process.env.EXTERNAL_PROXY_URL || DEFAULT_EXTERNAL_PROXY_URL;
     if ((fetchRes.status === 429 || fetchRes.status === 403 || fetchRes.status === 502) && externalProxyUrl) {
       try {
@@ -53,7 +67,7 @@ export async function GET(request: NextRequest) {
         proxyHeaders.set('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
         return new NextResponse(proxyRes.body, { status: proxyRes.status, headers: proxyHeaders });
       } catch (e) {
-        console.error('[Proxy Edge] External proxy fallback failed', e);
+        console.error('[Proxy Node] External proxy fallback failed', e);
         // fall through to return original fetchRes below
       }
     }
