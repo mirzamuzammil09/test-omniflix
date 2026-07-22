@@ -42,8 +42,8 @@ const isExpired = (url?: string | null): boolean => {
     if (tParam) {
       const timestamp = parseInt(tParam, 10);
       const now = Math.floor(Date.now() / 1000);
-      // If the URL is more than 1 hour (3600s) old, consider it expired
-      if (now - timestamp > 3600) {
+      // Aliyun CDN tokens expire in ~30m (1800s). Consider URLs > 20m (1200s) old as expired to avoid 403 errors.
+      if (now - timestamp > 1200) {
         return true;
       }
     }
