@@ -38,10 +38,12 @@ export async function GET(request: NextRequest) {
       signal: request.signal,
     });
 
-    // If upstream is rate-limiting or blocking (429/403/502), try delegating to EXTERNAL_PROXY_URL
-    if ((fetchRes.status === 429 || fetchRes.status === 403 || fetchRes.status === 502) && process.env.EXTERNAL_PROXY_URL) {
+    // If upstream is rate-limiting or blocking (429/403/502), try delegating to EXTERNAL_PROXY_URL.
+    // If none is configured, fall back to the built-in worker proxy used by the playback route.
+    if (fetchRes.status === 429 || fetchRes.status === 403 || fetchRes.status === 502) {
+      const externalProxyUrl = process.env.EXTERNAL_PROXY_URL || 'https://omniflix.mgemers07.workers.dev';
       try {
-        const proxyUrl = new URL(process.env.EXTERNAL_PROXY_URL);
+        const proxyUrl = new URL(externalProxyUrl);
         proxyUrl.searchParams.set('url', targetUrl);
         if (headersStr) proxyUrl.searchParams.set('headers', headersStr);
         const proxyRes = await fetch(proxyUrl.toString(), { method: 'GET', signal: request.signal });
