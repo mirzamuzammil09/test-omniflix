@@ -147,19 +147,22 @@ export async function GET(request: NextRequest) {
     if (headersStr) {
       const parsed = JSON.parse(headersStr);
       for (const [key, value] of Object.entries(parsed)) {
-        headersRecord[key] = value as string;
-        headers.set(key, value as string);
+        if (value !== undefined && value !== null) {
+          const lowerKey = key.toLowerCase();
+          headersRecord[lowerKey] = String(value);
+          headers.set(lowerKey, String(value));
+        }
       }
     }
   } catch (e) {
     // ignore
   }
 
-  if (!headersRecord['referer']) {
+  if (!headersRecord['referer'] || headersRecord['referer'].includes('boredflix') || headersRecord['referer'] === 'https://netfilm.world') {
     headersRecord['referer'] = 'https://netfilm.world/';
     headers.set('referer', 'https://netfilm.world/');
   }
-  if (!headersRecord['origin']) {
+  if (!headersRecord['origin'] || headersRecord['origin'].includes('boredflix')) {
     headersRecord['origin'] = 'https://netfilm.world';
     headers.set('origin', 'https://netfilm.world');
   }

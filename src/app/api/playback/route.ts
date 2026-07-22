@@ -42,8 +42,9 @@ const isExpired = (url?: string | null): boolean => {
     if (tParam) {
       const timestamp = parseInt(tParam, 10);
       const now = Math.floor(Date.now() / 1000);
-      // Aliyun CDN tokens expire in ~30m (1800s). Consider URLs > 20m (1200s) old as expired to avoid 403 errors.
-      if (now - timestamp > 1200) {
+      // Aliyun/Netfilm CDN tokens remain valid for many hours (~12h).
+      // Only statically consider URLs > 12 hours (43200s) old as expired.
+      if (now - timestamp > 43200) {
         return true;
       }
     }
@@ -64,11 +65,17 @@ const cleanPlaybackHeaders = (headers: any): any => {
     return defaultHeaders;
   }
 
-  const cleaned = { ...defaultHeaders, ...headers };
-  if (!cleaned.referer || cleaned.referer === "https://netfilm.world") {
+  const cleaned: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    if (v !== undefined && v !== null) {
+      cleaned[k.toLowerCase()] = String(v);
+    }
+  }
+
+  if (!cleaned.referer || cleaned.referer.includes("boredflix") || cleaned.referer === "https://netfilm.world") {
     cleaned.referer = "https://netfilm.world/";
   }
-  if (!cleaned.origin) {
+  if (!cleaned.origin || cleaned.origin.includes("boredflix")) {
     cleaned.origin = "https://netfilm.world";
   }
   if (!cleaned["user-agent"]) {
@@ -767,7 +774,25 @@ const verifyCDNUrl = async (url: string, headers: any): Promise<boolean> => {
     logDebug(`[verifyCDNUrl] URL is expired: ${url}`);
     return false;
   }
-  return true;
+  try {
+    const reqHeaders = cleanPlaybackHeaders(headers);
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        ...reqHeaders,
+        "range": "bytes=0-100"
+      },
+      signal: AbortSignal.timeout(4000)
+    });
+    if (res.status === 200 || res.status === 206) {
+      return true;
+    }
+    logDebug(`[verifyCDNUrl] CDN check failed with status ${res.status} for ${url}`);
+    return false;
+  } catch (err: any) {
+    logDebug(`[verifyCDNUrl] CDN check network fallback error: ${err?.message || err}`);
+    return true;
+  }
 };
 
 const clearBoredflixCache = async (
@@ -1008,8 +1033,9 @@ export async function POST(request: NextRequest) {
             const versionData = await versionRes.json();
             const dubUrl = versionData?.url || versionData?.m3u8_url || versionData?.quality_info?.hls_master_url;
             if (dubUrl) {
-              if (isExpired(dubUrl)) {
-                logDebug(`[Dub] ⚠️ Version URL for ${dpath} is expired (t timestamp too old). Clearing cache & retrying fresh...`);
+              const isValidDub = await verifyCDNUrl(dubUrl, versionData.quality_info?.playback_headers || {});
+              if (!isValidDub) {
+                logDebug(`[Dub] ⚠️ Version URL for ${dpath} is invalid/403/expired. Clearing cache & retrying fresh...`);
                 await clearBoredflixCache(id, contentType, serverNum, token, sid, season, episode);
                 if (!forceFresh) {
                   return await tryVersionFetch(sid, dpath, true);
@@ -1089,8 +1115,8 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // 2b. Initial load ONLY (not for dub requests) — cache GET → POST scrape (Option B)
-      if (!rawUrl && !isDubRequest) {
+      // 2b. Initial load ONLY (not for dub requests or forced refresh) — cache GET → POST scrape (Option B)
+      if (!rawUrl && !isDubRequest && !forceRefresh) {
         const tvCacheParams = contentType === "tv" ? `?season=${season}&episode=${episode}` : "";
         const cacheUrl = `https://boredflix.cc/${serverNum}/scrape/get/${id}/${contentType}${tvCacheParams}${tvCacheParams ? '&' : '?'}_=${Date.now()}`;
         let cacheRes: Response | null = null;
@@ -1208,7 +1234,7 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        if (rawUrl && !rawUrl.toLowerCase().includes(".m3u8")) {
+        if (rawUrl) {
           const urlOk = await verifyCDNUrl(rawUrl, playbackHeaders || {});
           if (!urlOk) {
             logDebug(`[CDN Guard] Raw URL invalid/403 after scrape, forcing fresh re-scrape`);
