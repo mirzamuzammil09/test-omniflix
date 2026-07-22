@@ -15,7 +15,6 @@ const logDebug = (msg: string) => {
 const isServerless =
   process.env.VERCEL === "1" ||
   process.env.NETLIFY === "true" ||
-  process.env.NODE_ENV === "production" ||
   process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined;
 
 const cleanTitle = (title: string): string => {

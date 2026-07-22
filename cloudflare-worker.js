@@ -24,6 +24,21 @@ async function handleRequest(request) {
     return new Response("Invalid headers JSON", { status: 400 });
   }
 
+  if (!targetHeaders['user-agent'] && !targetHeaders['User-Agent']) {
+    targetHeaders['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36';
+  }
+  if (!targetHeaders['origin'] && !targetHeaders['Origin']) {
+    targetHeaders['Origin'] = 'https://netfilm.world';
+  }
+  if (!targetHeaders['referer'] && !targetHeaders['Referer']) {
+    targetHeaders['Referer'] = 'https://netfilm.world/';
+  }
+
+  const range = request.headers.get('range');
+  if (range) {
+    targetHeaders['range'] = range;
+  }
+
   const modifiedRequest = new Request(targetUrlStr, {
     method: request.method,
     headers: targetHeaders

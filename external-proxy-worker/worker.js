@@ -41,6 +41,16 @@ async function handle(request) {
       try { forwarded.set(k, String(v)); } catch (e) { /* ignore */ }
     }
 
+    if (!forwarded.has('user-agent')) {
+      forwarded.set('user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36');
+    }
+    if (!forwarded.has('origin')) {
+      forwarded.set('origin', 'https://netfilm.world');
+    }
+    if (!forwarded.has('referer')) {
+      forwarded.set('referer', 'https://netfilm.world/');
+    }
+
     // Build fetch init
     const init = {
       method: request.method,
