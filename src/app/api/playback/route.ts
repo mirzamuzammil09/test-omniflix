@@ -119,34 +119,48 @@ let directFetchBlockedUntil = 0;
 
 // Fallback hardcoded proxies to use if both proxyscrape and monosans fail or time out.
 const fallbackProxiesList: string[] = [
-  "103.152.112.162:80",
-  "20.206.106.190:80",
-  "20.219.180.149:3128",
-  "18.143.215.35:80",
-  "20.24.43.214:80",
-  "34.23.45.223:80",
-  "47.251.43.115:80",
-  "20.205.61.143:80",
-  "20.197.81.104:80",
-  "20.219.176.48:3128",
-  "8.219.97.248:80",
-  "20.235.159.51:80",
-  "20.24.111.4:80",
-  "103.149.130.38:80",
-  "103.152.112.120:80",
-  "47.254.80.204:80",
-  "20.210.113.33:80",
-  "103.49.202.252:80",
-  "20.205.47.166:80",
-  "43.134.195.122:3128",
-  "47.88.3.174:8080",
-  "47.251.70.179:80",
-  "47.89.255.253:8080",
-  "117.250.3.58:8080",
-  "20.205.107.189:80",
-  "20.206.101.44:80",
-  "20.210.26.179:80",
-  "20.205.110.148:80"
+  "95.211.174.135:3128",
+  "2.59.43.253:22222",
+  "135.87.39.23:80",
+  "85.237.39.139:8080",
+  "160.238.65.7:3128",
+  "176.111.37.216:39811",
+  "93.77.191.156:8118",
+  "135.87.39.23:9443",
+  "168.184.84.85:443",
+  "153.80.240.37:8080",
+  "176.88.166.163:8080",
+  "103.167.61.162:3128",
+  "91.84.104.61:8118",
+  "34.69.61.247:80",
+  "80.90.186.133:8444",
+  "135.87.39.23:443",
+  "149.18.81.114:7890",
+  "176.111.37.5:39811",
+  "45.153.4.154:3128",
+  "34.186.244.31:443",
+  "188.127.224.164:2080",
+  "185.191.239.248:3128",
+  "94.158.49.82:3128",
+  "49.48.142.46:8080",
+  "160.238.65.4:3128",
+  "34.43.46.91:80",
+  "93.185.68.82:8080",
+  "154.17.8.103:1680",
+  "160.250.130.72:3128",
+  "43.153.82.179:8888",
+  "20.83.140.251:8080",
+  "42.96.18.62:1311",
+  "157.254.194.57:1080",
+  "64.112.184.210:3128",
+  "3.211.120.181:443",
+  "182.253.228.155:80",
+  "175.139.255.25:8181",
+  "110.172.29.162:443",
+  "213.226.127.45:8000",
+  "34.94.46.8:80",
+  "1.231.81.166:3128",
+  "168.184.84.54:80"
 ];
 
 async function getFreeProxies(): Promise<string[]> {
@@ -161,7 +175,7 @@ async function getFreeProxies(): Promise<string[]> {
   const fetchProxyscrape = async () => {
     try {
       const res = await fetch("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=yes&anonymity=all", {
-        signal: AbortSignal.timeout(2500)
+        signal: AbortSignal.timeout(6000)
       });
       if (!res.ok) throw new Error("Proxyscrape error " + res.status);
       const text = await res.text();
@@ -177,7 +191,7 @@ async function getFreeProxies(): Promise<string[]> {
   const fetchMonosans = async () => {
     try {
       const res = await fetch("https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt", {
-        signal: AbortSignal.timeout(2500)
+        signal: AbortSignal.timeout(6000)
       });
       if (!res.ok) throw new Error("Monosans error " + res.status);
       const text = await res.text();
@@ -193,7 +207,7 @@ async function getFreeProxies(): Promise<string[]> {
   const fetchTheSpeedX = async () => {
     try {
       const res = await fetch("https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt", {
-        signal: AbortSignal.timeout(2500)
+        signal: AbortSignal.timeout(6000)
       });
       if (!res.ok) throw new Error("TheSpeedX error " + res.status);
       const text = await res.text();
@@ -209,7 +223,7 @@ async function getFreeProxies(): Promise<string[]> {
   const fetchPrxchk = async () => {
     try {
       const res = await fetch("https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt", {
-        signal: AbortSignal.timeout(2500)
+        signal: AbortSignal.timeout(6000)
       });
       if (!res.ok) throw new Error("Prxchk error " + res.status);
       const text = await res.text();
@@ -603,16 +617,16 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
 
       if (res.status === 403) {
         directFetchBlocked = true;
-        directFetchBlockedUntil = Date.now() + 5 * 60 * 1000; // 5 min
-        logDebug(`[Proxy-Client] Direct fetch blocked (403) for ${url}. Marking blocked for 5min.`);
+        directFetchBlockedUntil = Date.now() + 10 * 1000; // 10 seconds (allow fast recovery)
+        logDebug(`[Proxy-Client] Direct fetch blocked (403) for ${url}. Marking blocked for 10s.`);
       } else {
         logDebug(`[Proxy-Client] Direct fetch returned status ${res.status} for ${url}.`);
       }
     } catch (err: any) {
-      // Timeout or network error — mark as blocked so we don't repeat this waste
+      // Timeout or network error — mark as blocked briefly (5s) so we don't stall
       directFetchBlocked = true;
-      directFetchBlockedUntil = Date.now() + 30 * 1000; // 30 seconds
-      logDebug(`[Proxy-Client] Direct fetch failed/timed out for ${url}: ${err.message}. Marking blocked for 30s.`);
+      directFetchBlockedUntil = Date.now() + 5 * 1000; // 5 seconds
+      logDebug(`[Proxy-Client] Direct fetch failed/timed out for ${url}: ${err.message}. Marking blocked for 5s.`);
     }
   } else {
     logDebug(`[Proxy-Client] Direct fetch skipped (known blocked, ${Math.ceil((directFetchBlockedUntil - now) / 1000)}s remaining).`);
