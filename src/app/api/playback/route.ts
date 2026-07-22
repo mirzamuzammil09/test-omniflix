@@ -1213,7 +1213,7 @@ export async function POST(request: NextRequest) {
         }
 
         if (rawUrl) {
-          const proxyEndpoint = process.env.EXTERNAL_PROXY_URL || "/api/proxy";
+          const proxyEndpoint = "/api/proxy";
 
           const cleanedHeaders = cleanPlaybackHeaders(playbackHeaders) || {
             "origin": "https://netfilm.world",
@@ -1229,7 +1229,7 @@ export async function POST(request: NextRequest) {
 
         if (qInfo.qualities?.length > 0) {
           qualities = qInfo.qualities.map((q: any) => {
-            const qProxyEndpoint = process.env.EXTERNAL_PROXY_URL || "/api/proxy";
+            const qProxyEndpoint = "/api/proxy";
 
             const qCleanedHeaders = cleanPlaybackHeaders(q.playback_headers || playbackHeaders) || {
               "origin": "https://netfilm.world",
