@@ -59,7 +59,9 @@ const cleanPlaybackHeaders = (headers: any): any => {
   for (const key of Object.keys(cleaned)) {
     const lowerKey = key.toLowerCase();
     if (lowerKey === "referer") {
-      cleaned[key] = "https://netfilm.world/";
+      if (!cleaned[key] || cleaned[key] === "https://netfilm.world") {
+        cleaned[key] = "https://netfilm.world/";
+      }
     } else if (lowerKey === "origin") {
       cleaned[key] = "https://netfilm.world";
     }

@@ -213,12 +213,23 @@ export async function GET(request: NextRequest) {
     }
 
     if (!responseBody) {
-      return new NextResponse('Proxy request failed', { status: fetchStatus || 502 });
+      return new NextResponse('Proxy request failed', {
+        status: fetchStatus || 502,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        }
+      });
     }
 
     responseHeaders.set('Access-Control-Allow-Origin', '*');
     responseHeaders.set('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
-    responseHeaders.set('Cache-Control', 'public, max-age=60, s-maxage=120, stale-while-revalidate=60');
+
+    if (fetchStatus >= 400) {
+      responseHeaders.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    } else {
+      responseHeaders.set('Cache-Control', 'private, no-cache, no-store, must-revalidate, max-age=0');
+    }
 
     const contentType = responseHeaders.get('content-type') || '';
     if (contentType.includes('mpegurl') || contentType.includes('application/vnd.apple.mpegurl') || targetUrl.includes('.m3u8')) {
