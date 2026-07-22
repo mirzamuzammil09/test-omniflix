@@ -1379,6 +1379,8 @@ export async function POST(request: NextRequest) {
          finalErrorMsg = "This dub is currently unavailable. Please select another language.";
       }
 
+      const statusCode = isNetworkProblem ? 503 : 404;
+
       if (isDubRequest) {
         return NextResponse.json(
           {
@@ -1386,12 +1388,12 @@ export async function POST(request: NextRequest) {
             dubFailed: true,
             audioVersions,
           },
-          { status: 503 }
+          { status: statusCode }
         );
       }
       return NextResponse.json(
         { error: finalErrorMsg },
-        { status: 503 }
+        { status: statusCode }
       );
     }
 
