@@ -38,13 +38,22 @@ function fetchWithHttp2(
       }
 
       if (!reqHeaders['user-agent']) {
-        reqHeaders['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36';
+        reqHeaders['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
       }
       if (!reqHeaders['accept']) {
         reqHeaders['accept'] = '*/*';
       }
       if (!reqHeaders['accept-language']) {
         reqHeaders['accept-language'] = 'en-US,en;q=0.9';
+      }
+      if (!reqHeaders['sec-ch-ua']) {
+        reqHeaders['sec-ch-ua'] = '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"';
+      }
+      if (!reqHeaders['sec-ch-ua-mobile']) {
+        reqHeaders['sec-ch-ua-mobile'] = '?0';
+      }
+      if (!reqHeaders['sec-ch-ua-platform']) {
+        reqHeaders['sec-ch-ua-platform'] = '"Windows"';
       }
       if (!reqHeaders['sec-fetch-dest']) {
         reqHeaders['sec-fetch-dest'] = 'video';
@@ -207,8 +216,10 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // 3. Fallback to external proxy if configured and upstream is blocking
-    const externalProxyUrl = process.env.EXTERNAL_PROXY_URL || DEFAULT_EXTERNAL_PROXY_URL;
+    // 3. Fallback to external proxy if configured and upstream is blocking.
+    // NOTE: Skip external worker proxy for hakunaymatata CDN as Cloudflare Worker IPs are blocked by Aliyun CDN with 429.
+    const isHakunayMatata = targetUrl.includes('hakunaymatata.com') || targetUrl.includes('bcdnxw');
+    const externalProxyUrl = !isHakunayMatata ? (process.env.EXTERNAL_PROXY_URL || DEFAULT_EXTERNAL_PROXY_URL) : null;
     if ((!responseBody || fetchStatus === 429 || fetchStatus === 403 || fetchStatus === 502) && externalProxyUrl) {
       try {
         const proxyUrl = new URL(externalProxyUrl);
