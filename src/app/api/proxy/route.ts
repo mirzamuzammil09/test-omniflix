@@ -38,6 +38,23 @@ export async function GET(request: NextRequest) {
       signal: request.signal,
     });
 
+    // If upstream is rate-limiting or blocking (429/403/502), try delegating to EXTERNAL_PROXY_URL
+    if ((fetchRes.status === 429 || fetchRes.status === 403 || fetchRes.status === 502) && process.env.EXTERNAL_PROXY_URL) {
+      try {
+        const proxyUrl = new URL(process.env.EXTERNAL_PROXY_URL);
+        proxyUrl.searchParams.set('url', targetUrl);
+        if (headersStr) proxyUrl.searchParams.set('headers', headersStr);
+        const proxyRes = await fetch(proxyUrl.toString(), { method: 'GET', signal: request.signal });
+        const proxyHeaders = new Headers(proxyRes.headers);
+        proxyHeaders.set('Access-Control-Allow-Origin', '*');
+        proxyHeaders.set('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
+        return new NextResponse(proxyRes.body, { status: proxyRes.status, headers: proxyHeaders });
+      } catch (e) {
+        console.error('[Proxy Edge] External proxy fallback failed', e);
+        // fall through to return original fetchRes below
+      }
+    }
+
     const responseHeaders = new Headers(fetchRes.headers);
     responseHeaders.set('Access-Control-Allow-Origin', '*');
     responseHeaders.set('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');

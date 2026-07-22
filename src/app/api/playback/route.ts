@@ -549,6 +549,28 @@ function requestWithProxy(urlStr: string, options: any = {}): Promise<any> {
 
 async function fetchBoredflixWithFallback(url: string, options: any = {}): Promise<any> {
   // 1. Direct Fetch
+  // If running on serverless (Netlify/Vercel) and an external proxy is provided,
+  // delegate the request to that proxy to avoid heavy proxy rotation and rate-limits.
+  if (isServerless && process.env.EXTERNAL_PROXY_URL) {
+    try {
+      const proxyUrl = new URL(process.env.EXTERNAL_PROXY_URL);
+      proxyUrl.searchParams.set('url', url);
+      // Preserve headers and method/body when delegating
+      const proxyOptions: any = {
+        method: options.method || 'GET',
+        headers: options.headers || undefined,
+        body: options.body || undefined,
+        signal: options.signal || undefined,
+        cache: options.cache || undefined,
+      };
+      logDebug(`[Proxy-Client] Using EXTERNAL_PROXY_URL for serverless request: ${proxyUrl.toString()}`);
+      const res = await fetch(proxyUrl.toString(), proxyOptions);
+      return res;
+    } catch (e: any) {
+      logDebug(`[Proxy-Client] EXTERNAL_PROXY_URL delegation failed: ${e?.message || e}`);
+      // fall through to normal flow
+    }
+  }
   // In serverless environments, hosting IPs (Vercel/Netlify) are 100% blocked by Cloudflare.
   // Skipping direct fetch entirely in serverless avoids wasting time (1.2s per request).
   // In local development, direct fetch is attempted — but once we confirm the IP is blocked
