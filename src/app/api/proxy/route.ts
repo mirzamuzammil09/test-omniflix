@@ -1,10 +1,121 @@
 import { NextRequest, NextResponse } from 'next/server';
 import http2 from 'http2';
+import http from 'http';
+import https from 'https';
+import tls from 'tls';
 import { Readable } from 'stream';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const DEFAULT_EXTERNAL_PROXY_URL = "https://boredflix-mp4-proxy-v2.abdouphphtml.workers.dev/m3u8-proxy";
+
+const fallbackProxiesPool: string[] = [
+  "93.77.191.156:8118",
+  "176.111.37.216:39811",
+  "149.18.81.114:7890",
+  "85.237.39.139:8080",
+  "160.238.65.7:3128",
+  "95.211.174.135:3128",
+  "2.59.43.253:22222",
+  "45.153.4.154:3128",
+  "188.127.224.164:2080",
+  "185.191.239.248:3128",
+  "94.158.49.82:3128",
+  "160.238.65.4:3128",
+  "93.185.68.82:8080",
+  "154.17.8.103:1680",
+  "20.83.140.251:8080"
+];
+
+async function fetchStreamWithProxyRotation(
+  targetUrl: string,
+  headersRecord: Record<string, string>,
+  signal?: AbortSignal
+): Promise<{ status: number; headers: Headers; body: ReadableStream } | null> {
+  const parsed = new URL(targetUrl);
+  const targetHost = parsed.hostname;
+  const targetPath = parsed.pathname + parsed.search;
+
+  for (const proxyStr of fallbackProxiesPool) {
+    if (signal?.aborted) break;
+    const [host, portStr] = proxyStr.split(":");
+    const port = parseInt(portStr, 10);
+    try {
+      const res = await new Promise<{ status: number; headers: Headers; body: ReadableStream }>((resolve, reject) => {
+        if (signal?.aborted) return reject(new Error("Aborted"));
+
+        const connectReq = http.request({
+          host,
+          port,
+          method: "CONNECT",
+          path: `${targetHost}:443`,
+          timeout: 4000
+        });
+
+        connectReq.on("connect", (cRes, socket) => {
+          if (cRes.statusCode === 200) {
+            const tlsSocket = tls.connect({
+              host: targetHost,
+              socket,
+              servername: targetHost,
+              rejectUnauthorized: false
+            }, () => {
+              const reqHeaders: Record<string, string> = {
+                "host": targetHost,
+                "user-agent": headersRecord["user-agent"] || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "accept": "*/*",
+                "referer": "https://netfilm.world/",
+                "origin": "https://netfilm.world"
+              };
+              if (headersRecord["range"]) {
+                reqHeaders["range"] = headersRecord["range"];
+              }
+              const req = https.request({
+                host: targetHost,
+                path: targetPath,
+                method: "GET",
+                headers: reqHeaders
+              }, (hRes) => {
+                const status = hRes.statusCode || 200;
+                if (status === 200 || status === 206) {
+                  const resHeaders = new Headers();
+                  for (const [k, v] of Object.entries(hRes.headers)) {
+                    if (v !== undefined) {
+                      if (Array.isArray(v)) v.forEach(val => resHeaders.append(k, val));
+                      else resHeaders.set(k, String(v));
+                    }
+                  }
+                  const webStream = Readable.toWeb(hRes) as ReadableStream;
+                  resolve({ status, headers: resHeaders, body: webStream });
+                } else {
+                  reject(new Error(`Proxy response status ${status}`));
+                }
+              });
+              req.on("error", reject);
+              req.end();
+            });
+            tlsSocket.on("error", reject);
+          } else {
+            reject(new Error(`CONNECT status ${cRes.statusCode}`));
+          }
+        });
+        connectReq.on("error", reject);
+        connectReq.on("timeout", () => {
+          connectReq.destroy();
+          reject(new Error("Proxy timeout"));
+        });
+        connectReq.end();
+      });
+
+      if (res && (res.status === 200 || res.status === 206)) {
+        return res;
+      }
+    } catch (err) {
+      // try next proxy
+    }
+  }
+  return null;
+}
 
 function fetchWithHttp2(
   targetUrl: string,
@@ -221,8 +332,22 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // 3. Fallback to external proxy if configured and upstream is blocking.
-    // NOTE: Skip external worker proxy for hakunaymatata CDN as Cloudflare Worker IPs are blocked by Aliyun CDN with 429.
+    // 3. Fallback to proxy rotation if direct fetch returned 403, 429, 502 or failed
+    if (!responseBody || fetchStatus === 429 || fetchStatus === 403 || fetchStatus === 502) {
+      try {
+        console.log(`[Proxy Node] Direct fetch status ${fetchStatus}. Attempting proxy rotation pool fallback...`);
+        const rotatedRes = await fetchStreamWithProxyRotation(targetUrl, headersRecord, request.signal);
+        if (rotatedRes) {
+          fetchStatus = rotatedRes.status;
+          responseHeaders = rotatedRes.headers;
+          responseBody = rotatedRes.body;
+        }
+      } catch (rotErr) {
+        console.error('[Proxy Node] Proxy rotation fallback failed:', rotErr);
+      }
+    }
+
+    // 4. External proxy fallback if configured and still failing
     const isHakunayMatata = targetUrl.includes('hakunaymatata.com') || targetUrl.includes('bcdnxw');
     const externalProxyUrl = !isHakunayMatata ? (process.env.EXTERNAL_PROXY_URL || DEFAULT_EXTERNAL_PROXY_URL) : null;
     if ((!responseBody || fetchStatus === 429 || fetchStatus === 403 || fetchStatus === 502) && externalProxyUrl) {
