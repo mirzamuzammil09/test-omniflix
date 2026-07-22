@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { tmdb } from "@/services/tmdb";
+import { shouldAttemptExternalProxy } from "@/lib/playback-proxy";
 import https from "https";
 import http from "http";
 import tls from "tls";
@@ -548,37 +549,18 @@ function requestWithProxy(urlStr: string, options: any = {}): Promise<any> {
 }
 
 async function fetchBoredflixWithFallback(url: string, options: any = {}): Promise<any> {
-  // 1. Direct Fetch
-  // If running on serverless (Netlify/Vercel) and an external proxy is provided,
-  // delegate the request to that proxy to avoid heavy proxy rotation and rate-limits.
-  if (isServerless && process.env.EXTERNAL_PROXY_URL) {
-    try {
-      const proxyUrl = new URL(process.env.EXTERNAL_PROXY_URL);
-      proxyUrl.searchParams.set('url', url);
-      // Preserve headers and method/body when delegating
-      const proxyOptions: any = {
-        method: options.method || 'GET',
-        headers: options.headers || undefined,
-        body: options.body || undefined,
-        signal: options.signal || undefined,
-        cache: options.cache || undefined,
-      };
-      logDebug(`[Proxy-Client] Using EXTERNAL_PROXY_URL for serverless request: ${proxyUrl.toString()}`);
-      const res = await fetch(proxyUrl.toString(), proxyOptions);
-      return res;
-    } catch (e: any) {
-      logDebug(`[Proxy-Client] EXTERNAL_PROXY_URL delegation failed: ${e?.message || e}`);
-      // fall through to normal flow
-    }
-  }
-  // In serverless environments, hosting IPs (Vercel/Netlify) are 100% blocked by Cloudflare.
-  // Skipping direct fetch entirely in serverless avoids wasting time (1.2s per request).
-  // In local development, direct fetch is attempted — but once we confirm the IP is blocked
-  // (CF block / timeout), we set directFetchBlocked=true to skip all future direct attempts
-  // in this process lifetime, eliminating the 4.5s wasted round-trip on every subsequent call.
+  const externalProxyUrl = process.env.EXTERNAL_PROXY_URL;
+  const shouldUseExternalProxyFallback = shouldAttemptExternalProxy(url, {
+    isServerless,
+    externalProxyUrl,
+  });
+
+  // 1. Direct Fetch first, even in serverless environments.
+  // This avoids the worker-specific 403/Origin restrictions on boredflix endpoints
+  // while still allowing an external proxy fallback when the direct request fails.
   const now = Date.now();
   const isDirectBlocked = directFetchBlocked && now < directFetchBlockedUntil;
-  if (!isServerless && !isDirectBlocked) {
+  if (!isDirectBlocked) {
     const directTimeout = 4500;
     try {
       const controller = new AbortController();
@@ -613,21 +595,41 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
       if (res.status === 403) {
         directFetchBlocked = true;
         directFetchBlockedUntil = Date.now() + 5 * 60 * 1000; // 5 min
-        logDebug(`[Proxy-Client] Direct fetch blocked (403) for ${url}. Marking blocked for 5min. Switching to proxy fallback.`);
+        logDebug(`[Proxy-Client] Direct fetch blocked (403) for ${url}. Marking blocked for 5min.`);
       } else {
-        logDebug(`[Proxy-Client] Direct fetch returned status ${res.status} for ${url}. Switching to proxy fallback.`);
+        logDebug(`[Proxy-Client] Direct fetch returned status ${res.status} for ${url}.`);
       }
     } catch (err: any) {
       // Timeout or network error — mark as blocked so we don't repeat this waste
       directFetchBlocked = true;
       directFetchBlockedUntil = Date.now() + 30 * 1000; // 30 seconds
-      logDebug(`[Proxy-Client] Direct fetch failed/timed out for ${url}: ${err.message}. Marking blocked for 30s. Switching to proxy fallback.`);
+      logDebug(`[Proxy-Client] Direct fetch failed/timed out for ${url}: ${err.message}. Marking blocked for 30s.`);
     }
-  } else if (isDirectBlocked) {
-    logDebug(`[Proxy-Client] Direct fetch skipped (known blocked, ${Math.ceil((directFetchBlockedUntil - now) / 1000)}s remaining). Going straight to proxy.`);
+  } else {
+    logDebug(`[Proxy-Client] Direct fetch skipped (known blocked, ${Math.ceil((directFetchBlockedUntil - now) / 1000)}s remaining).`);
   }
 
-  // 2. Proxy Rotation
+  // 2. External proxy fallback for non-boredflix requests when direct fetch fails.
+  if (shouldUseExternalProxyFallback && externalProxyUrl) {
+    try {
+      const proxyUrl = new URL(externalProxyUrl);
+      proxyUrl.searchParams.set('url', url);
+      const proxyOptions: any = {
+        method: options.method || 'GET',
+        headers: options.headers || undefined,
+        body: options.body || undefined,
+        signal: options.signal || undefined,
+        cache: options.cache || undefined,
+      };
+      logDebug(`[Proxy-Client] Falling back to EXTERNAL_PROXY_URL for ${url}: ${proxyUrl.toString()}`);
+      const res = await fetch(proxyUrl.toString(), proxyOptions);
+      return res;
+    } catch (e: any) {
+      logDebug(`[Proxy-Client] EXTERNAL_PROXY_URL delegation failed: ${e?.message || e}`);
+    }
+  }
+
+  // 3. Proxy Rotation
   const proxies = await getFreeProxies();
   if (proxies.length === 0) {
     logDebug(`[Proxy-Client] No backup proxies available, throwing error`);
