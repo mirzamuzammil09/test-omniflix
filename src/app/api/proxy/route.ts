@@ -158,11 +158,13 @@ export async function GET(request: NextRequest) {
     // ignore
   }
 
-  if (!headersRecord['referer'] || headersRecord['referer'].includes('boredflix') || headersRecord['referer'] === 'https://netfilm.world') {
+  const isHakunayMatataTarget = targetUrl.includes('hakunaymatata.com') || targetUrl.includes('bcdnxw');
+
+  if (isHakunayMatataTarget || !headersRecord['referer'] || headersRecord['referer'].includes('boredflix') || headersRecord['referer'] === 'https://netfilm.world') {
     headersRecord['referer'] = 'https://netfilm.world/';
     headers.set('referer', 'https://netfilm.world/');
   }
-  if (!headersRecord['origin'] || headersRecord['origin'].includes('boredflix')) {
+  if (isHakunayMatataTarget || !headersRecord['origin'] || headersRecord['origin'].includes('boredflix')) {
     headersRecord['origin'] = 'https://netfilm.world';
     headers.set('origin', 'https://netfilm.world');
   }
@@ -251,6 +253,16 @@ export async function GET(request: NextRequest) {
 
     responseHeaders.set('Access-Control-Allow-Origin', '*');
     responseHeaders.set('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
+    responseHeaders.set('Access-Control-Allow-Headers', '*');
+    responseHeaders.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges, Content-Type');
+
+    // Remove headers that break HTML5 video streaming or cause browser attachment/CORS errors
+    responseHeaders.delete('content-disposition');
+    responseHeaders.delete('Content-Disposition');
+    responseHeaders.delete('x-frame-options');
+    responseHeaders.delete('X-Frame-Options');
+    responseHeaders.delete('content-security-policy');
+    responseHeaders.delete('transfer-encoding');
 
     if (fetchStatus >= 400) {
       responseHeaders.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
