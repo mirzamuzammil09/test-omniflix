@@ -675,7 +675,7 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
         }
       } else {
         setS1StreamUrl(null);
-        setS1Error('ویڈیو لوڈ نہیں ہو سکی۔ براہ کرم دوبارہ کوشش کریں یا اپنا نیٹ ورک چیک کریں۔');
+        setS1Error(lastError?.message || 'Video stream unavailable for this episode. Please try another episode or server.');
         setIsLoading(false);
       }
     }
@@ -1165,7 +1165,7 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
                   );
                 }, 1500);
               } else {
-                setS1Error('ویڈیو بار بار fail ہو رہی ہے۔ براہ کرم دوبارہ کوشش کریں۔');
+                setS1Error('Playback failed repeatedly. Please try selecting another server or episode.');
                 setIsLoading(false);
               }
             }}

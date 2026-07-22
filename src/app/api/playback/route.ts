@@ -1369,7 +1369,10 @@ export async function POST(request: NextRequest) {
     }
 
     if (!streamUrl) {
-      let finalErrorMsg = "No stream available for this title right now. Please try again or switch to Server 2.";
+      let finalErrorMsg = contentType === "tv"
+        ? `Season ${season || 1} Episode ${episode || 1} is currently unavailable or does not exist. Please select a valid episode or server.`
+        : "No stream available for this title right now. Please try again or switch to Server 2.";
+
       if (isNetworkProblem) {
          finalErrorMsg = "Your internet connection seems slow or disconnected. Please check your network and try again.";
       } else if (isDubRequest) {
