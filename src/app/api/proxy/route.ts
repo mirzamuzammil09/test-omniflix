@@ -75,6 +75,7 @@ export async function GET(request: NextRequest) {
     const responseHeaders = new Headers(fetchRes.headers);
     responseHeaders.set('Access-Control-Allow-Origin', '*');
     responseHeaders.set('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
+    responseHeaders.set('Cache-Control', 'public, max-age=60, s-maxage=120, stale-while-revalidate=60');
 
     const contentType = fetchRes.headers.get('content-type') || '';
     if (contentType.includes('mpegurl') || contentType.includes('application/vnd.apple.mpegurl') || targetUrl.includes('.m3u8')) {

@@ -779,6 +779,21 @@ const clearBoredflixCache = async (
 
 let cachedToken: string | null = null;
 let cachedTokenTime: number = 0;
+const playbackCache = new Map<string, { data: any; expiresAt: number }>();
+const PLAYBACK_CACHE_TTL_MS = 2 * 60 * 1000;
+
+const buildPlaybackCacheKey = (body: any): string => {
+  const { id, subjectId, detailPath, server = "source_06", type = "movie", season, episode } = body || {};
+  return JSON.stringify({
+    id: id?.toString() || "",
+    subjectId: subjectId?.toString() || "",
+    detailPath: detailPath || "",
+    server: String(server),
+    type: String(type),
+    season: season?.toString() || "",
+    episode: episode?.toString() || "",
+  });
+};
 
 export async function POST(request: NextRequest) {
   // Hotlinking & Scraper Guard: Only allow requests originating from our own domain
@@ -829,6 +844,15 @@ export async function POST(request: NextRequest) {
     const { id, subjectId, detailPath, server = "source_06", type = "movie", season, episode, forceRefresh } = body;
 
     logDebug(`POST request received. ID: ${id}, type: ${type}, server: ${server}, season: ${season}, episode: ${episode}, subjectId: ${subjectId}, detailPath: ${detailPath}, forceRefresh: ${forceRefresh}`);
+
+    const cacheKey = buildPlaybackCacheKey(body);
+    const cachedPlayback = !forceRefresh ? playbackCache.get(cacheKey) : null;
+    if (cachedPlayback && cachedPlayback.expiresAt > Date.now()) {
+      logDebug(`[Cache] Returning cached playback response for ${cacheKey}`);
+      const cachedResponse = NextResponse.json(cachedPlayback.data);
+      cachedResponse.headers.set("Cache-Control", "public, max-age=60, s-maxage=120, stale-while-revalidate=60");
+      return cachedResponse;
+    }
 
     if (!id) {
       logDebug(`Error: TMDB ID is required`);
@@ -1346,14 +1370,23 @@ export async function POST(request: NextRequest) {
       downloadFilename = `${cleanTitle}.mp4`;
     }
 
-    return NextResponse.json({
+    const payload = {
       streamUrl,
       audioVersions,
       subtitles,
       qualities,
       downloadFilename,
       message: details || "OK"
+    };
+
+    playbackCache.set(cacheKey, {
+      data: payload,
+      expiresAt: Date.now() + PLAYBACK_CACHE_TTL_MS,
     });
+
+    const response = NextResponse.json(payload);
+    response.headers.set("Cache-Control", "public, max-age=60, s-maxage=120, stale-while-revalidate=60");
+    return response;
 
   } catch (error: any) {
     console.error("Video proxy error:", error);
