@@ -117,6 +117,92 @@ async function fetchStreamWithProxyRotation(
   return null;
 }
 
+async function fetchStreamWithSingleProxy(
+  targetUrl: string,
+  proxyStr: string,
+  headersRecord: Record<string, string>,
+  signal?: AbortSignal
+): Promise<{ status: number; headers: Headers; body: ReadableStream } | null> {
+  const [host, portStr] = proxyStr.split(":");
+  const port = parseInt(portStr, 10);
+  const parsed = new URL(targetUrl);
+  const targetHost = parsed.hostname;
+  const targetPath = parsed.pathname + parsed.search;
+
+  try {
+    const res = await new Promise<{ status: number; headers: Headers; body: ReadableStream }>((resolve, reject) => {
+      if (signal?.aborted) return reject(new Error("Aborted"));
+
+      const connectReq = http.request({
+        host,
+        port,
+        method: "CONNECT",
+        path: `${targetHost}:443`,
+        timeout: 5000
+      });
+
+      connectReq.on("connect", (cRes, socket) => {
+        if (cRes.statusCode === 200) {
+          const tlsSocket = tls.connect({
+            host: targetHost,
+            socket,
+            servername: targetHost,
+            rejectUnauthorized: false
+          }, () => {
+            const reqHeaders: Record<string, string> = {
+              "host": targetHost,
+              "user-agent": headersRecord["user-agent"] || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+              "accept": "*/*",
+              "referer": headersRecord["referer"] || "https://netfilm.world/",
+              "origin": headersRecord["origin"] || "https://netfilm.world"
+            };
+            if (headersRecord["range"]) {
+              reqHeaders["range"] = headersRecord["range"];
+            }
+            const req = https.request({
+              host: targetHost,
+              path: targetPath,
+              method: "GET",
+              headers: reqHeaders
+            }, (hRes) => {
+              const status = hRes.statusCode || 200;
+              if (status === 200 || status === 206) {
+                const resHeaders = new Headers();
+                for (const [k, v] of Object.entries(hRes.headers)) {
+                  if (v !== undefined) {
+                    if (Array.isArray(v)) v.forEach(val => resHeaders.append(k, val));
+                    else resHeaders.set(k, String(v));
+                  }
+                }
+                const webStream = Readable.toWeb(hRes) as ReadableStream;
+                resolve({ status, headers: resHeaders, body: webStream });
+              } else {
+                reject(new Error(`Proxy CONNECT status ${status}`));
+              }
+            });
+            req.on("error", reject);
+            req.end();
+          });
+          tlsSocket.on("error", reject);
+        } else {
+          reject(new Error(`CONNECT status ${cRes.statusCode}`));
+        }
+      });
+      connectReq.on("error", reject);
+      connectReq.on("timeout", () => {
+        connectReq.destroy();
+        reject(new Error("Proxy timeout"));
+      });
+      connectReq.end();
+    });
+
+    return res;
+  } catch (err: any) {
+    console.warn(`[Proxy Node] Single proxy ${proxyStr} failed:`, err?.message || err);
+    return null;
+  }
+}
+
 function fetchWithHttp2(
   targetUrl: string,
   headersObj: Record<string, string>,
@@ -247,6 +333,7 @@ export async function GET(request: NextRequest) {
   const urlParams = new URL(request.url).searchParams;
   const targetUrl = urlParams.get('url');
   const headersStr = urlParams.get('headers');
+  const specifiedProxy = urlParams.get('proxy');
 
   if (!targetUrl) {
     return new NextResponse("Missing url parameter", { status: 400 });
@@ -297,14 +384,32 @@ export async function GET(request: NextRequest) {
     let responseBody: ReadableStream | null = null;
     let fetchTextContent: string | null = null;
 
-    // 1. Try HTTP/2 fetch first (essential for Aliyun/Tengine CDNs that reject HTTP/1.1 with 429)
-    try {
-      const h2Res = await fetchWithHttp2(targetUrl, headersRecord, request.signal);
-      fetchStatus = h2Res.status;
-      responseHeaders = h2Res.headers;
-      responseBody = h2Res.body;
-    } catch (h2Err) {
-      console.warn('[Proxy H2] HTTP/2 fetch failed, trying HTTP/1 fallback:', h2Err);
+    // 0. If a specific proxy was passed (from stateful scraper), try it first to honor IP-bound signature
+    if (specifiedProxy) {
+      try {
+        console.log(`[Proxy Node] Attempting stream fetch via stateful specified proxy: ${specifiedProxy}...`);
+        const singleRes = await fetchStreamWithSingleProxy(targetUrl, specifiedProxy, headersRecord, request.signal);
+        if (singleRes && (singleRes.status === 200 || singleRes.status === 206)) {
+          console.log(`[Proxy Node] Stateful specified proxy ${specifiedProxy} SUCCEEDED (${singleRes.status})`);
+          fetchStatus = singleRes.status;
+          responseHeaders = singleRes.headers;
+          responseBody = singleRes.body;
+        }
+      } catch (spErr) {
+        console.warn(`[Proxy Node] Stateful specified proxy ${specifiedProxy} failed, falling back:`, spErr);
+      }
+    }
+
+    // 1. Try HTTP/2 fetch if no successful response yet
+    if (!responseBody) {
+      try {
+        const h2Res = await fetchWithHttp2(targetUrl, headersRecord, request.signal);
+        fetchStatus = h2Res.status;
+        responseHeaders = h2Res.headers;
+        responseBody = h2Res.body;
+      } catch (h2Err) {
+        console.warn('[Proxy H2] HTTP/2 fetch failed, trying HTTP/1 fallback:', h2Err);
+      }
     }
 
     // 2. If HTTP/2 failed or returned 429/403/502, attempt HTTP/1 fetch

@@ -619,6 +619,7 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
         // Direct fetch worked — site is reachable, clear blocked flag
         directFetchBlocked = false;
         logDebug(`[Proxy-Client] Direct fetch succeeded for ${url}`);
+        (res as any)._proxyUsed = null;
         return res;
       }
 
@@ -749,6 +750,7 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
               }
             }
 
+            (res as any)._proxyUsed = proxy;
             resolve(res);
           } else {
             throw new Error(`Non-OK status: ${res.status}`);
@@ -769,13 +771,36 @@ async function fetchBoredflixWithFallback(url: string, options: any = {}): Promi
   });
 }
 
-const verifyCDNUrl = async (url: string, headers: any): Promise<boolean> => {
+const verifyCDNUrl = async (url: string, headers: any, proxy?: string | null): Promise<boolean> => {
   if (isExpired(url)) {
     logDebug(`[verifyCDNUrl] URL is expired: ${url}`);
     return false;
   }
   try {
     const reqHeaders = cleanPlaybackHeaders(headers);
+
+    if (proxy) {
+      logDebug(`[verifyCDNUrl] Testing CDN URL via specified proxy ${proxy}...`);
+      try {
+        const proxyRes = await requestWithProxy(url, {
+          method: "GET",
+          headers: {
+            ...reqHeaders,
+            "range": "bytes=0-100"
+          },
+          proxy: `http://${proxy}`,
+          timeout: 4000
+        });
+        if (proxyRes.ok || proxyRes.status === 206) {
+          logDebug(`[verifyCDNUrl] CDN check via specified proxy ${proxy} SUCCEEDED (${proxyRes.status})`);
+          return true;
+        }
+        logDebug(`[verifyCDNUrl] CDN check via specified proxy ${proxy} returned status ${proxyRes.status}`);
+      } catch (pErr: any) {
+        logDebug(`[verifyCDNUrl] CDN check via specified proxy ${proxy} error: ${pErr?.message || pErr}`);
+      }
+    }
+
     const res = await fetch(url, {
       method: "GET",
       headers: {
@@ -983,6 +1008,7 @@ export async function POST(request: NextRequest) {
       let activeStream: any = null;
       let rawUrl: string | null = null;
       let playbackHeaders: any = null;
+      let usedScrapeProxy: string | null = null;
       qualities = [];
 
       let audioVersionsPromise: Promise<any> | null = null;
@@ -1035,10 +1061,11 @@ export async function POST(request: NextRequest) {
             signal: AbortSignal.timeout(isServerless ? 4500 : Math.min(5000, getRemainingTimeout(1000)))
           });
           if (versionRes.ok) {
+            if ((versionRes as any)?._proxyUsed) usedScrapeProxy = (versionRes as any)._proxyUsed;
             const versionData = await versionRes.json();
             const dubUrl = versionData?.url || versionData?.m3u8_url || versionData?.quality_info?.hls_master_url;
             if (dubUrl) {
-              const isValidDub = await verifyCDNUrl(dubUrl, versionData.quality_info?.playback_headers || {});
+              const isValidDub = await verifyCDNUrl(dubUrl, versionData.quality_info?.playback_headers || {}, usedScrapeProxy);
               if (!isValidDub) {
                 logDebug(`[Dub] ⚠️ Version URL for ${dpath} is invalid/403/expired. Clearing cache & retrying fresh...`);
                 await clearBoredflixCache(id, contentType, serverNum, token, sid, season, episode);
@@ -1142,7 +1169,10 @@ export async function POST(request: NextRequest) {
           logDebug(`[Cache] GET cache failed or timed out: ${cacheErr?.message || cacheErr}`);
         }
 
+        let scrapeResponse: any = null;
+
         if (cacheRes && cacheRes.ok) {
+          if ((cacheRes as any)?._proxyUsed) usedScrapeProxy = (cacheRes as any)._proxyUsed;
           const cacheData = await cacheRes.json();
           if (cacheData?.results?.[server]) {
             const possibleStream = cacheData.results[server];
@@ -1164,7 +1194,7 @@ export async function POST(request: NextRequest) {
               audioVersions = possibleStream.audio_versions;
             }
             if (possibleUrl) {
-              const isValid = await verifyCDNUrl(possibleUrl, possibleHdrs || {});
+              const isValid = await verifyCDNUrl(possibleUrl, possibleHdrs || {}, usedScrapeProxy);
               if (isValid) {
                 activeStream = possibleStream;
               } else {
@@ -1176,7 +1206,7 @@ export async function POST(request: NextRequest) {
 
         if (!activeStream) {
           const tvScrapeParams = contentType === "tv" ? { season: String(season), episode: String(episode) } : {};
-          const scrapeResponse = await fetchBoredflixWithFallback("https://boredflix.cc/scrape", {
+          scrapeResponse = await fetchBoredflixWithFallback("https://boredflix.cc/scrape", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -1193,6 +1223,7 @@ export async function POST(request: NextRequest) {
           });
 
           if (scrapeResponse.ok) {
+            if ((scrapeResponse as any)?._proxyUsed) usedScrapeProxy = (scrapeResponse as any)._proxyUsed;
             const resJson = await scrapeResponse.json();
             if (resJson.success && resJson.results?.[server]) {
               activeStream = resJson.results[server];
@@ -1240,7 +1271,7 @@ export async function POST(request: NextRequest) {
         }
 
         if (rawUrl) {
-          const urlOk = await verifyCDNUrl(rawUrl, playbackHeaders || {});
+          const urlOk = await verifyCDNUrl(rawUrl, playbackHeaders || {}, usedScrapeProxy);
           if (!urlOk) {
             logDebug(`[CDN Guard] Raw URL invalid/403 after scrape, forcing fresh re-scrape`);
 
@@ -1311,6 +1342,9 @@ export async function POST(request: NextRequest) {
           const params = new URLSearchParams();
           params.set("url", rawUrl);
           params.set("headers", JSON.stringify(cleanedHeaders));
+          if (usedScrapeProxy) {
+            params.set("proxy", usedScrapeProxy);
+          }
           streamUrl = `${proxyEndpoint}?${params.toString()}`;
         }
 
@@ -1327,6 +1361,9 @@ export async function POST(request: NextRequest) {
             const qParams = new URLSearchParams();
             qParams.set("url", q.url);
             qParams.set("headers", JSON.stringify(qCleanedHeaders));
+            if (usedScrapeProxy) {
+              qParams.set("proxy", usedScrapeProxy);
+            }
             const proxiedUrl = `${qProxyEndpoint}?${qParams.toString()}`;
 
             return {
