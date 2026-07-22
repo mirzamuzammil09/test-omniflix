@@ -1156,14 +1156,14 @@ export default function VideoPlayer({ tmdbId, type, season = 1, episode = 1 }: V
                 setS1StreamUrl(null);
                 setIsLoading(true);
 
-                const shouldForceRefresh = s1VideoErrorCountRef.current > 1;
+                const shouldForceRefresh = true;
                 setTimeout(() => {
                   fetchS1Stream(
                     s1SelectedAudio !== 'none' ? s1SelectedAudio : undefined,
                     s1AudioVersions.find((t: any) => t.subject_id === s1SelectedAudio || t.id === s1SelectedAudio)?.detail_path,
                     shouldForceRefresh
                   );
-                }, 1500);
+                }, 1000);
               } else {
                 setS1Error('Playback failed repeatedly. Please try selecting another server or episode.');
                 setIsLoading(false);
