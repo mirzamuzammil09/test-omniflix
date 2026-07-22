@@ -787,6 +787,10 @@ const verifyCDNUrl = async (url: string, headers: any): Promise<boolean> => {
     if (res.status === 200 || res.status === 206) {
       return true;
     }
+    if ((res.status === 403 || res.status === 429) && (url.includes('hakunaymatata') || url.includes('bcdnxw'))) {
+      logDebug(`[verifyCDNUrl] Direct check returned ${res.status} due to datacenter IP guard. Accepting for proxy rotation.`);
+      return true;
+    }
     logDebug(`[verifyCDNUrl] CDN check failed with status ${res.status} for ${url}`);
     return false;
   } catch (err: any) {
