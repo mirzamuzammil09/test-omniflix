@@ -4,7 +4,7 @@ import { Readable } from 'stream';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-const DEFAULT_EXTERNAL_PROXY_URL = "https://omniflix.mgemers07.workers.dev";
+const DEFAULT_EXTERNAL_PROXY_URL = "https://boredflix-mp4-proxy-v2.abdouphphtml.workers.dev/m3u8-proxy";
 
 function fetchWithHttp2(
   targetUrl: string,
