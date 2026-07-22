@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 export const runtime = 'edge';
+const DEFAULT_EXTERNAL_PROXY_URL = "https://omniflix.mgemers07.workers.dev";
 
 export async function GET(request: NextRequest) {
   const urlParams = new URL(request.url).searchParams;
@@ -40,9 +41,9 @@ export async function GET(request: NextRequest) {
 
     // If upstream is rate-limiting or blocking (429/403/502), allow a custom proxy only when configured.
     // Do not use the public worker proxy by default.
-    if ((fetchRes.status === 429 || fetchRes.status === 403 || fetchRes.status === 502) && process.env.EXTERNAL_PROXY_URL) {
+    const externalProxyUrl = process.env.EXTERNAL_PROXY_URL || DEFAULT_EXTERNAL_PROXY_URL;
+    if ((fetchRes.status === 429 || fetchRes.status === 403 || fetchRes.status === 502) && externalProxyUrl) {
       try {
-        const externalProxyUrl = process.env.EXTERNAL_PROXY_URL;
         const proxyUrl = new URL(externalProxyUrl);
         proxyUrl.searchParams.set('url', targetUrl);
         if (headersStr) proxyUrl.searchParams.set('headers', headersStr);
