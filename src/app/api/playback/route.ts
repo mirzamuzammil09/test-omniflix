@@ -965,9 +965,10 @@ export async function POST(request: NextRequest) {
       const tvParams = contentType === "tv" ? `&season=${season}&episode=${episode}` : "";
 
       // Helper: attempt the /version endpoint with a given subject_id + detail_path
-      const tryVersionFetch = async (sid: string, dpath: string): Promise<boolean> => {
-        const versionUrl = `https://boredflix.cc/${serverNum}/aoneroom/version?tmdb_id=${id}&subject_id=${sid}&detail_path=${dpath}&type=${contentType}${tvParams}&_=${Date.now()}`;
-        logDebug(`[Dub] Fetching version: ${versionUrl}`);
+      const tryVersionFetch = async (sid: string, dpath: string, forceFresh = false): Promise<boolean> => {
+        const forceParam = forceFresh ? "&force_refresh=true" : "";
+        const versionUrl = `https://boredflix.cc/${serverNum}/aoneroom/version?tmdb_id=${id}&subject_id=${sid}&detail_path=${dpath}&type=${contentType}${tvParams}${forceParam}&_=${Date.now()}`;
+        logDebug(`[Dub] Fetching version (forceFresh=${forceFresh}): ${versionUrl}`);
         try {
           const versionRes = await fetchBoredflixWithFallback(versionUrl, {
             headers: {
@@ -983,11 +984,19 @@ export async function POST(request: NextRequest) {
             const versionData = await versionRes.json();
             const dubUrl = versionData?.url || versionData?.m3u8_url || versionData?.quality_info?.hls_master_url;
             if (dubUrl) {
+              if (isExpired(dubUrl)) {
+                logDebug(`[Dub] ⚠️ Version URL for ${dpath} is expired (t timestamp too old). Clearing cache & retrying fresh...`);
+                await clearBoredflixCache(id, contentType, serverNum, token, sid, season, episode);
+                if (!forceFresh) {
+                  return await tryVersionFetch(sid, dpath, true);
+                }
+                return false;
+              }
               activeStream = versionData;
               rawUrl = dubUrl;
               playbackHeaders = versionData.quality_info?.playback_headers;
               details = `Dub stream: ${dpath}`;
-              logDebug(`[Dub] ✅ Got dub stream URL for ${dpath}`);
+              logDebug(`[Dub] ✅ Got valid dub stream URL for ${dpath}`);
               return true;
             }
             logDebug(`[Dub] Version OK but no URL in response for ${dpath}`);
@@ -1007,7 +1016,7 @@ export async function POST(request: NextRequest) {
 
       // 2a. Dub version fetch (Option A) — with fresh-path retry on 502
       if (subjectId && detailPath) {
-        const attempt1 = await tryVersionFetch(subjectId, detailPath);
+        const attempt1 = await tryVersionFetch(subjectId, detailPath, forceRefresh);
 
         if (!attempt1) {
           logDebug(`[Dub] Attempt 1 failed. Fetching fresh audio-versions to find correct detail_path...`);
@@ -1041,7 +1050,7 @@ export async function POST(request: NextRequest) {
                 const matchedTrack = sentTrack || langTrack;
                 if (matchedTrack?.detail_path) {
                   logDebug(`[Dub] Fresh audio-versions found matching track: ${matchedTrack.label} → ${matchedTrack.detail_path}`);
-                  const attempt2 = await tryVersionFetch(matchedTrack.subject_id || matchedTrack.id, matchedTrack.detail_path);
+                  const attempt2 = await tryVersionFetch(matchedTrack.subject_id || matchedTrack.id, matchedTrack.detail_path, true);
                   if (!attempt2) {
                     logDebug(`[Dub] ❌ Attempt 2 also failed with fresh detail_path. Dub unavailable.`);
                   }
@@ -1121,7 +1130,7 @@ export async function POST(request: NextRequest) {
               "Referer": "https://boredflix.cc/",
               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             },
-            body: JSON.stringify({ tmdb_id: id.toString(), content_type: contentType, server, ...tvScrapeParams }),
+            body: JSON.stringify({ tmdb_id: id.toString(), content_type: contentType, server, force_refresh: forceRefresh, ...tvScrapeParams }),
             cache: "no-store",
             // 4.5s direct + 1.5s proxy-list + 9s proxy-rotation = 15s worst-case.
             // After first failure, directFetchBlocked shortens this to ~10.5s.
@@ -1181,11 +1190,11 @@ export async function POST(request: NextRequest) {
             logDebug(`[CDN Guard] Raw URL invalid/403 after scrape, forcing fresh re-scrape`);
 
             if (isDubRequest) {
-              logDebug(`[CDN Guard] Dub request detected. Clearing dub cache and retrying version fetch...`);
+              logDebug(`[CDN Guard] Dub request detected. Clearing dub cache and retrying version fetch with force_refresh...`);
               await clearBoredflixCache(id, contentType, serverNum, token, undefined, season, episode);
               await clearBoredflixCache(id, contentType, serverNum, token, subjectId, season, episode);
 
-              const success = await tryVersionFetch(subjectId, detailPath);
+              const success = await tryVersionFetch(subjectId, detailPath, true);
               if (!success) {
                 logDebug(`[CDN Guard] Dub version fetch failed after cache clear.`);
                 rawUrl = null;
@@ -1203,7 +1212,7 @@ export async function POST(request: NextRequest) {
                     "Referer": "https://boredflix.cc/",
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                   },
-                  body: JSON.stringify({ tmdb_id: id.toString(), content_type: contentType, server, ...tvScrapeParams2 }),
+                  body: JSON.stringify({ tmdb_id: id.toString(), content_type: contentType, server, force_refresh: true, ...tvScrapeParams2 }),
                   cache: "no-store",
                   signal: AbortSignal.timeout(15000) // Independent fixed timeout
                 });
