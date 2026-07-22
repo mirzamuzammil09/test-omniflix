@@ -54,17 +54,25 @@ const isExpired = (url?: string | null): boolean => {
 };
 
 const cleanPlaybackHeaders = (headers: any): any => {
-  if (!headers) return headers;
-  const cleaned = { ...headers };
-  for (const key of Object.keys(cleaned)) {
-    const lowerKey = key.toLowerCase();
-    if (lowerKey === "referer") {
-      if (!cleaned[key] || cleaned[key] === "https://netfilm.world") {
-        cleaned[key] = "https://netfilm.world/";
-      }
-    } else if (lowerKey === "origin") {
-      cleaned[key] = "https://netfilm.world";
-    }
+  const defaultHeaders = {
+    "origin": "https://netfilm.world",
+    "referer": "https://netfilm.world/",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+  };
+
+  if (!headers || typeof headers !== "object") {
+    return defaultHeaders;
+  }
+
+  const cleaned = { ...defaultHeaders, ...headers };
+  if (!cleaned.referer || cleaned.referer === "https://netfilm.world") {
+    cleaned.referer = "https://netfilm.world/";
+  }
+  if (!cleaned.origin) {
+    cleaned.origin = "https://netfilm.world";
+  }
+  if (!cleaned["user-agent"]) {
+    cleaned["user-agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
   }
   return cleaned;
 };

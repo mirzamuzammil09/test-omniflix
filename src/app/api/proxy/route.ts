@@ -146,6 +146,19 @@ export async function GET(request: NextRequest) {
     // ignore
   }
 
+  if (!headersRecord['referer']) {
+    headersRecord['referer'] = 'https://netfilm.world/';
+    headers.set('referer', 'https://netfilm.world/');
+  }
+  if (!headersRecord['origin']) {
+    headersRecord['origin'] = 'https://netfilm.world';
+    headers.set('origin', 'https://netfilm.world');
+  }
+  if (!headersRecord['user-agent']) {
+    headersRecord['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36';
+    headers.set('user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36');
+  }
+
   // Forward range requests
   const range = request.headers.get('range');
   if (range) {
