@@ -7,6 +7,15 @@ import tls from "tls";
 
 export const maxDuration = 60;
 
+if (typeof process !== 'undefined') {
+  process.on('uncaughtException', (err) => {
+    console.error('[Playback Process] Uncaught Exception caught:', err);
+  });
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('[Playback Process] Unhandled Rejection at:', promise, 'reason:', reason);
+  });
+}
+
 
 const logDebug = (msg: string) => {
   console.log(`[Playback-Debug] ${msg}`);
@@ -381,6 +390,7 @@ function requestWithProxy(urlStr: string, options: any = {}): Promise<any> {
 
         connectReq.on("connect", (res: any, socket: any, head: any) => {
           activeSocket = socket;
+          socket.on("error", (err: any) => safeReject(err));
           if (res.statusCode !== 200) {
             socket.destroy();
             safeReject(new Error(`Proxy CONNECT failed: HTTP ${res.statusCode}`));

@@ -9,6 +9,16 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const DEFAULT_EXTERNAL_PROXY_URL = "https://boredflix-mp4-proxy-v2.abdouphphtml.workers.dev/m3u8-proxy";
 
+// Global process error handlers to prevent unhandled socket/stream errors from crashing Node.js
+if (typeof process !== 'undefined') {
+  process.on('uncaughtException', (err) => {
+    console.error('[Proxy Process] Uncaught Exception caught:', err);
+  });
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('[Proxy Process] Unhandled Rejection at:', promise, 'reason:', reason);
+  });
+}
+
 const fallbackProxiesPool: string[] = [
   "93.77.191.156:8118",
   "176.111.37.216:39811",
@@ -27,94 +37,64 @@ const fallbackProxiesPool: string[] = [
   "20.83.140.251:8080"
 ];
 
-async function fetchStreamWithProxyRotation(
-  targetUrl: string,
-  headersRecord: Record<string, string>,
-  signal?: AbortSignal
-): Promise<{ status: number; headers: Headers; body: ReadableStream } | null> {
-  const parsed = new URL(targetUrl);
-  const targetHost = parsed.hostname;
-  const targetPath = parsed.pathname + parsed.search;
+function isNonVideoOrBlockPage(status: number, contentType: string): boolean {
+  if (status !== 200 && status !== 206) return true;
+  const lowerType = (contentType || '').toLowerCase();
+  if (lowerType.includes('text/html') || (lowerType.includes('text/plain') && !lowerType.includes('m3u8'))) {
+    return true;
+  }
+  return false;
+}
 
-  for (const proxyStr of fallbackProxiesPool) {
-    if (signal?.aborted) break;
-    const [host, portStr] = proxyStr.split(":");
-    const port = parseInt(portStr, 10);
+function nodeToWebStream(
+  stream: Readable,
+  cleanupSockets?: () => void
+): ReadableStream<Uint8Array> {
+  let isCleanedUp = false;
+
+  const doCleanup = (err?: any) => {
+    if (isCleanedUp) return;
+    isCleanedUp = true;
     try {
-      const res = await new Promise<{ status: number; headers: Headers; body: ReadableStream }>((resolve, reject) => {
-        if (signal?.aborted) return reject(new Error("Aborted"));
+      if ('destroy' in stream && typeof stream.destroy === 'function') {
+        stream.destroy(err);
+      }
+    } catch (e) {}
+    if (cleanupSockets) {
+      try { cleanupSockets(); } catch (e) {}
+    }
+  };
 
-        const connectReq = http.request({
-          host,
-          port,
-          method: "CONNECT",
-          path: `${targetHost}:443`,
-          timeout: 4000
-        });
+  stream.on('error', (err) => {
+    console.warn('[Proxy Stream Node Error]', err?.message || err);
+    doCleanup(err);
+  });
 
-        connectReq.on("connect", (cRes, socket) => {
-          if (cRes.statusCode === 200) {
-            const tlsSocket = tls.connect({
-              host: targetHost,
-              socket,
-              servername: targetHost,
-              rejectUnauthorized: false
-            }, () => {
-              const reqHeaders: Record<string, string> = {
-                "host": targetHost,
-                "user-agent": headersRecord["user-agent"] || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "accept": "*/*",
-                "referer": "https://netfilm.world/",
-                "origin": "https://netfilm.world"
-              };
-              if (headersRecord["range"]) {
-                reqHeaders["range"] = headersRecord["range"];
-              }
-              const req = https.request({
-                host: targetHost,
-                path: targetPath,
-                method: "GET",
-                headers: reqHeaders
-              }, (hRes) => {
-                const status = hRes.statusCode || 200;
-                if (status === 200 || status === 206) {
-                  const resHeaders = new Headers();
-                  for (const [k, v] of Object.entries(hRes.headers)) {
-                    if (v !== undefined) {
-                      if (Array.isArray(v)) v.forEach(val => resHeaders.append(k, val));
-                      else resHeaders.set(k, String(v));
-                    }
-                  }
-                  const webStream = Readable.toWeb(hRes) as ReadableStream;
-                  resolve({ status, headers: resHeaders, body: webStream });
-                } else {
-                  reject(new Error(`Proxy response status ${status}`));
-                }
-              });
-              req.on("error", reject);
-              req.end();
-            });
-            tlsSocket.on("error", reject);
-          } else {
-            reject(new Error(`CONNECT status ${cRes.statusCode}`));
-          }
-        });
-        connectReq.on("error", reject);
-        connectReq.on("timeout", () => {
-          connectReq.destroy();
-          reject(new Error("Proxy timeout"));
-        });
-        connectReq.end();
+  return new ReadableStream({
+    start(controller) {
+      stream.on('data', (chunk: Buffer) => {
+        try {
+          controller.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+        } catch (err) {
+          doCleanup(err);
+        }
       });
 
-      if (res && (res.status === 200 || res.status === 206)) {
-        return res;
-      }
-    } catch (err) {
-      // try next proxy
+      stream.on('end', () => {
+        try { controller.close(); } catch (e) {}
+        doCleanup();
+      });
+
+      stream.on('error', (err) => {
+        try { controller.error(err); } catch (e) {}
+        doCleanup(err);
+      });
+    },
+    cancel(reason) {
+      console.warn('[Proxy Stream Canceled by Client]', reason);
+      doCleanup();
     }
-  }
-  return null;
+  });
 }
 
 async function fetchStreamWithSingleProxy(
@@ -125,15 +105,52 @@ async function fetchStreamWithSingleProxy(
 ): Promise<{ status: number; headers: Headers; body: ReadableStream } | null> {
   const [host, portStr] = proxyStr.split(":");
   const port = parseInt(portStr, 10);
+  if (!host || isNaN(port)) return null;
+
   const parsed = new URL(targetUrl);
   const targetHost = parsed.hostname;
   const targetPath = parsed.pathname + parsed.search;
 
-  try {
-    const res = await new Promise<{ status: number; headers: Headers; body: ReadableStream }>((resolve, reject) => {
-      if (signal?.aborted) return reject(new Error("Aborted"));
+  return new Promise((resolve) => {
+    let resolved = false;
+    let connectReq: http.ClientRequest | null = null;
+    let socket: any = null;
+    let tlsSocket: any = null;
+    let req: http.ClientRequest | null = null;
+    let hRes: http.IncomingMessage | null = null;
 
-      const connectReq = http.request({
+    const cleanup = (err?: any) => {
+      if (connectReq) { try { connectReq.destroy(); } catch (e) {} }
+      if (req) { try { req.destroy(); } catch (e) {} }
+      if (tlsSocket) { try { tlsSocket.destroy(); } catch (e) {} }
+      if (socket) { try { socket.destroy(); } catch (e) {} }
+      if (hRes) { try { hRes.destroy(); } catch (e) {} }
+    };
+
+    const safeResolve = (val: { status: number; headers: Headers; body: ReadableStream } | null) => {
+      if (resolved) return;
+      resolved = true;
+      if (signalListener && signal) {
+        signal.removeEventListener('abort', signalListener);
+      }
+      resolve(val);
+    };
+
+    const signalListener = () => {
+      cleanup();
+      safeResolve(null);
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        safeResolve(null);
+        return;
+      }
+      signal.addEventListener('abort', signalListener, { once: true });
+    }
+
+    try {
+      connectReq = http.request({
         host,
         port,
         method: "CONNECT",
@@ -141,11 +158,35 @@ async function fetchStreamWithSingleProxy(
         timeout: 5000
       });
 
-      connectReq.on("connect", (cRes, socket) => {
-        if (cRes.statusCode === 200) {
-          const tlsSocket = tls.connect({
+      connectReq.on("error", (err) => {
+        cleanup(err);
+        safeResolve(null);
+      });
+
+      connectReq.on("timeout", () => {
+        cleanup();
+        safeResolve(null);
+      });
+
+      connectReq.on("connect", (cRes, rawSocket) => {
+        socket = rawSocket;
+
+        socket.on("error", (err: any) => {
+          console.warn(`[Proxy Raw Socket Error] ${host}:${port} -> ${targetHost}:`, err?.message || err);
+          cleanup(err);
+          safeResolve(null);
+        });
+
+        if (cRes.statusCode !== 200) {
+          cleanup();
+          safeResolve(null);
+          return;
+        }
+
+        try {
+          tlsSocket = tls.connect({
             host: targetHost,
-            socket,
+            socket: socket,
             servername: targetHost,
             rejectUnauthorized: false
           }, () => {
@@ -159,14 +200,32 @@ async function fetchStreamWithSingleProxy(
             if (headersRecord["range"]) {
               reqHeaders["range"] = headersRecord["range"];
             }
-            const req = https.request({
-              host: targetHost,
-              path: targetPath,
-              method: "GET",
-              headers: reqHeaders
-            }, (hRes) => {
-              const status = hRes.statusCode || 200;
-              if (status === 200 || status === 206) {
+
+            try {
+              req = https.request({
+                host: targetHost,
+                path: targetPath,
+                method: "GET",
+                headers: reqHeaders
+              }, (responseStream) => {
+                hRes = responseStream;
+
+                hRes.on("error", (err) => {
+                  console.warn(`[Proxy Response Stream Error] ${host}:${port} -> ${targetHost}:`, err?.message || err);
+                  cleanup(err);
+                  safeResolve(null);
+                });
+
+                const status = hRes.statusCode || 200;
+                const contentType = hRes.headers["content-type"] || "";
+
+                if (isNonVideoOrBlockPage(status, contentType)) {
+                  console.warn(`[Proxy Single] Non-video or block page returned (status ${status}, type '${contentType}') from ${proxyStr}`);
+                  cleanup();
+                  safeResolve(null);
+                  return;
+                }
+
                 const resHeaders = new Headers();
                 for (const [k, v] of Object.entries(hRes.headers)) {
                   if (v !== undefined) {
@@ -174,51 +233,105 @@ async function fetchStreamWithSingleProxy(
                     else resHeaders.set(k, String(v));
                   }
                 }
-                const webStream = Readable.toWeb(hRes) as ReadableStream;
-                resolve({ status, headers: resHeaders, body: webStream });
-              } else {
-                reject(new Error(`Proxy CONNECT status ${status}`));
-              }
-            });
-            req.on("error", reject);
-            req.end();
+
+                const webStream = nodeToWebStream(hRes, () => {
+                  try { tlsSocket?.destroy(); } catch (e) {}
+                  try { socket?.destroy(); } catch (e) {}
+                  try { req?.destroy(); } catch (e) {}
+                });
+
+                safeResolve({ status, headers: resHeaders, body: webStream });
+              });
+
+              req.on("error", (err) => {
+                console.warn(`[Proxy HTTPS Req Error] ${host}:${port} -> ${targetHost}:`, err?.message || err);
+                cleanup(err);
+                safeResolve(null);
+              });
+
+              req.end();
+            } catch (err) {
+              cleanup(err);
+              safeResolve(null);
+            }
           });
-          tlsSocket.on("error", reject);
-        } else {
-          reject(new Error(`CONNECT status ${cRes.statusCode}`));
+
+          tlsSocket.on("error", (err: any) => {
+            console.warn(`[Proxy TLS Socket Error] ${host}:${port} -> ${targetHost}:`, err?.message || err);
+            cleanup(err);
+            safeResolve(null);
+          });
+        } catch (err) {
+          cleanup(err);
+          safeResolve(null);
         }
       });
-      connectReq.on("error", reject);
-      connectReq.on("timeout", () => {
-        connectReq.destroy();
-        reject(new Error("Proxy timeout"));
-      });
-      connectReq.end();
-    });
 
-    return res;
-  } catch (err: any) {
-    console.warn(`[Proxy Node] Single proxy ${proxyStr} failed:`, err?.message || err);
-    return null;
+      connectReq.end();
+    } catch (err) {
+      cleanup(err);
+      safeResolve(null);
+    }
+  });
+}
+
+async function fetchStreamWithProxyRotation(
+  targetUrl: string,
+  headersRecord: Record<string, string>,
+  signal?: AbortSignal
+): Promise<{ status: number; headers: Headers; body: ReadableStream } | null> {
+  for (const proxyStr of fallbackProxiesPool) {
+    if (signal?.aborted) break;
+    try {
+      const res = await fetchStreamWithSingleProxy(targetUrl, proxyStr, headersRecord, signal);
+      if (res) return res;
+    } catch (err) {
+      // try next proxy
+    }
   }
+  return null;
 }
 
 function fetchWithHttp2(
   targetUrl: string,
   headersObj: Record<string, string>,
   signal?: AbortSignal
-): Promise<{ status: number; headers: Headers; body: ReadableStream }> {
-  return new Promise((resolve, reject) => {
+): Promise<{ status: number; headers: Headers; body: ReadableStream } | null> {
+  return new Promise((resolve) => {
+    let resolved = false;
     let client: http2.ClientHttp2Session | null = null;
+    let req: http2.ClientHttp2Stream | null = null;
+
+    const safeResolve = (val: { status: number; headers: Headers; body: ReadableStream } | null) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(val);
+    };
+
+    const cleanup = () => {
+      if (req) { try { req.destroy(); } catch (e) {} }
+      if (client) { try { client.close(); } catch (e) {} }
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        safeResolve(null);
+        return;
+      }
+      signal.addEventListener('abort', () => {
+        cleanup();
+        safeResolve(null);
+      }, { once: true });
+    }
+
     try {
       const parsedUrl = new URL(targetUrl);
       client = http2.connect(parsedUrl.origin);
 
       client.on('error', (err) => {
-        if (client) {
-          try { client.close(); } catch (e) {}
-        }
-        reject(err);
+        console.warn('[Proxy H2 Session Error]', err?.message || err);
+        cleanup();
+        safeResolve(null);
       });
 
       const reqHeaders: Record<string, string> = {
@@ -262,26 +375,26 @@ function fetchWithHttp2(
         reqHeaders['sec-fetch-site'] = 'cross-site';
       }
 
-      const req = client.request(reqHeaders);
+      req = client.request(reqHeaders);
 
-      if (signal) {
-        if (signal.aborted) {
-          req.destroy();
-          try { client.close(); } catch (e) {}
-          return reject(new Error('Request aborted'));
-        }
-        signal.addEventListener('abort', () => {
-          req.destroy();
-          if (client) {
-            try { client.close(); } catch (e) {}
-          }
-        }, { once: true });
-      }
+      req.on('error', (err) => {
+        console.warn('[Proxy H2 Request Error]', err?.message || err);
+        cleanup();
+        safeResolve(null);
+      });
 
       req.on('response', (headers) => {
         const status = Number(headers[':status']) || 200;
-        const resHeaders = new Headers();
+        const contentType = String(headers['content-type'] || '');
 
+        if (isNonVideoOrBlockPage(status, contentType)) {
+          console.warn(`[Proxy H2] Non-video or block page returned (status ${status}, content-type '${contentType}')`);
+          cleanup();
+          safeResolve(null);
+          return;
+        }
+
+        const resHeaders = new Headers();
         for (const [k, v] of Object.entries(headers)) {
           if (!k.startsWith(':') && v !== undefined) {
             if (Array.isArray(v)) {
@@ -292,39 +405,21 @@ function fetchWithHttp2(
           }
         }
 
-        const webStream = Readable.toWeb(req) as ReadableStream;
-
-        req.on('end', () => {
-          if (client) {
-            try { client.close(); } catch (e) {}
-          }
-        });
-        req.on('error', () => {
-          if (client) {
-            try { client.close(); } catch (e) {}
-          }
+        const webStream = nodeToWebStream(req as any, () => {
+          if (client) { try { client.close(); } catch (e) {} }
         });
 
-        resolve({
+        safeResolve({
           status,
           headers: resHeaders,
           body: webStream,
         });
       });
 
-      req.on('error', (err) => {
-        if (client) {
-          try { client.close(); } catch (e) {}
-        }
-        reject(err);
-      });
-
       req.end();
     } catch (err) {
-      if (client) {
-        try { client.close(); } catch (e) {}
-      }
-      reject(err);
+      cleanup();
+      safeResolve(null);
     }
   });
 }
@@ -379,17 +474,16 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    let fetchStatus = 500;
+    let fetchStatus = 502;
     let responseHeaders = new Headers();
     let responseBody: ReadableStream | null = null;
-    let fetchTextContent: string | null = null;
 
     // 0. If a specific proxy was passed (from stateful scraper), try it first to honor IP-bound signature
     if (specifiedProxy) {
       try {
         console.log(`[Proxy Node] Attempting stream fetch via stateful specified proxy: ${specifiedProxy}...`);
         const singleRes = await fetchStreamWithSingleProxy(targetUrl, specifiedProxy, headersRecord, request.signal);
-        if (singleRes && (singleRes.status === 200 || singleRes.status === 206)) {
+        if (singleRes) {
           console.log(`[Proxy Node] Stateful specified proxy ${specifiedProxy} SUCCEEDED (${singleRes.status})`);
           fetchStatus = singleRes.status;
           responseHeaders = singleRes.headers;
@@ -404,16 +498,18 @@ export async function GET(request: NextRequest) {
     if (!responseBody) {
       try {
         const h2Res = await fetchWithHttp2(targetUrl, headersRecord, request.signal);
-        fetchStatus = h2Res.status;
-        responseHeaders = h2Res.headers;
-        responseBody = h2Res.body;
+        if (h2Res) {
+          fetchStatus = h2Res.status;
+          responseHeaders = h2Res.headers;
+          responseBody = h2Res.body;
+        }
       } catch (h2Err) {
         console.warn('[Proxy H2] HTTP/2 fetch failed, trying HTTP/1 fallback:', h2Err);
       }
     }
 
-    // 2. If HTTP/2 failed or returned 429/403/502, attempt HTTP/1 fetch
-    if (!responseBody || fetchStatus === 429 || fetchStatus === 403 || fetchStatus === 502) {
+    // 2. If HTTP/2 failed or returned non-video, attempt HTTP/1 fetch
+    if (!responseBody) {
       for (let attempt = 1; attempt <= 2; attempt += 1) {
         try {
           const fetchRes = await fetch(targetUrl, {
@@ -422,11 +518,17 @@ export async function GET(request: NextRequest) {
             signal: request.signal,
           });
 
-          fetchStatus = fetchRes.status;
-          responseHeaders = new Headers(fetchRes.headers);
-          responseBody = fetchRes.body;
+          const status = fetchRes.status;
+          const contentType = fetchRes.headers.get('content-type') || '';
 
-          const shouldRetry = fetchStatus === 429 || fetchStatus === 403 || fetchStatus === 502;
+          if (!isNonVideoOrBlockPage(status, contentType) && fetchRes.body) {
+            fetchStatus = status;
+            responseHeaders = new Headers(fetchRes.headers);
+            responseBody = fetchRes.body;
+            break;
+          }
+
+          const shouldRetry = status === 429 || status === 403 || status === 502;
           if (!shouldRetry || attempt === 2) {
             break;
           }
@@ -438,9 +540,9 @@ export async function GET(request: NextRequest) {
     }
 
     // 3. Fallback to proxy rotation if direct fetch returned 403, 429, 502 or failed
-    if (!responseBody || fetchStatus === 429 || fetchStatus === 403 || fetchStatus === 502) {
+    if (!responseBody) {
       try {
-        console.log(`[Proxy Node] Direct fetch status ${fetchStatus}. Attempting proxy rotation pool fallback...`);
+        console.log(`[Proxy Node] Direct fetch unavailable. Attempting proxy rotation pool fallback...`);
         const rotatedRes = await fetchStreamWithProxyRotation(targetUrl, headersRecord, request.signal);
         if (rotatedRes) {
           fetchStatus = rotatedRes.status;
@@ -455,25 +557,27 @@ export async function GET(request: NextRequest) {
     // 4. External proxy fallback if configured and still failing
     const isHakunayMatata = targetUrl.includes('hakunaymatata.com') || targetUrl.includes('bcdnxw');
     const externalProxyUrl = !isHakunayMatata ? (process.env.EXTERNAL_PROXY_URL || DEFAULT_EXTERNAL_PROXY_URL) : null;
-    if ((!responseBody || fetchStatus === 429 || fetchStatus === 403 || fetchStatus === 502) && externalProxyUrl) {
+    if (!responseBody && externalProxyUrl) {
       try {
         const proxyUrl = new URL(externalProxyUrl);
         proxyUrl.searchParams.set('url', targetUrl);
         if (headersStr) proxyUrl.searchParams.set('headers', headersStr);
         const proxyRes = await fetch(proxyUrl.toString(), { method: 'GET', signal: request.signal });
-        if (proxyRes.ok) {
-          fetchStatus = proxyRes.status;
+        const status = proxyRes.status;
+        const contentType = proxyRes.headers.get('content-type') || '';
+        if (!isNonVideoOrBlockPage(status, contentType) && proxyRes.body) {
+          fetchStatus = status;
           responseHeaders = new Headers(proxyRes.headers);
           responseBody = proxyRes.body;
         }
       } catch (extErr) {
-        console.error('[Proxy Node] External proxy fallback failed', extErr);
+        console.error('[Proxy Node] External proxy fallback failed:', extErr);
       }
     }
 
     if (!responseBody) {
-      return new NextResponse('Proxy request failed', {
-        status: fetchStatus || 502,
+      return new NextResponse('Proxy stream unavailable or returned non-video content', {
+        status: 502,
         headers: {
           'Access-Control-Allow-Origin': '*',
           'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
@@ -504,12 +608,22 @@ export async function GET(request: NextRequest) {
     if (contentType.includes('mpegurl') || contentType.includes('application/vnd.apple.mpegurl') || targetUrl.includes('.m3u8')) {
       const reader = responseBody.getReader();
       const chunks: Uint8Array[] = [];
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value) chunks.push(value);
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) chunks.push(value);
+        }
+      } catch (readErr) {
+        console.error('[Proxy M3U8 Read Error]', readErr);
+        return new NextResponse('Failed to read M3U8 stream', { status: 502 });
       }
+
       const text = Buffer.concat(chunks).toString('utf-8');
+      if (text.trim().startsWith('<html') || text.trim().startsWith('<!DOCTYPE html') || text.includes('Just a moment...')) {
+        return new NextResponse('Cloudflare block page received instead of M3U8 playlist', { status: 502 });
+      }
+
       const lines = text.split('\n');
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
@@ -538,8 +652,7 @@ export async function GET(request: NextRequest) {
     if (err.name === 'AbortError' || err.message?.includes('abort') || err.message?.includes('ResponseAborted')) {
       return new NextResponse(null, { status: 499 }); // Client Closed Request
     }
-    console.error("[Proxy Edge Error]", err);
-    return new NextResponse(err.message, { status: 500 });
+    console.error("[Proxy Edge Error]", err?.message || err);
+    return new NextResponse(err?.message || "Proxy stream error", { status: 502 });
   }
 }
-
